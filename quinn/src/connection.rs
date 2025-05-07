@@ -11,6 +11,7 @@ use std::{
 
 use bytes::Bytes;
 use pin_project_lite::pin_project;
+use qlog_rs::{events::Event, quic_10::data::{BaseStreamState, StreamSide, StreamState, StreamType}, writer::QlogWriter};
 use rustc_hash::FxHashMap;
 use thiserror::Error;
 use tokio::sync::{Notify, futures::Notified, mpsc, oneshot};
@@ -420,6 +421,19 @@ impl Connection {
     pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         let conn = &mut *self.0.state.lock("close");
         conn.close(error_code, Bytes::copy_from_slice(reason), &self.0.shared);
+
+        // TODO: Update arguments
+        QlogWriter::log_event(
+            Event::quic_10_connection_closed(
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None
+            )
+        );
     }
 
     /// Transmit `data` as an unreliable, unordered application datagram
@@ -652,6 +666,18 @@ impl Future for OpenUni<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
+
+        // TODO: Update arguments
+        QlogWriter::log_event(
+            Event::quic_10_stream_state_updated(
+                id.into(),
+                Some(StreamType::Unidirectional),
+                None,
+                StreamState::BaseStreamState(BaseStreamState::Open), 
+                Some(StreamSide::Sending)
+            )
+        );
+
         Poll::Ready(Ok(SendStream::new(conn, id, is_0rtt)))
     }
 }
@@ -670,6 +696,17 @@ impl Future for OpenBi<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
+
+        // TODO: Update arguments
+        QlogWriter::log_event(
+            Event::quic_10_stream_state_updated(
+                id.into(),
+                Some(StreamType::Bidirectional),
+                None,
+                StreamState::BaseStreamState(BaseStreamState::Open), 
+                Some(StreamSide::Sending)
+            )
+        );
 
         Poll::Ready(Ok((
             SendStream::new(conn.clone(), id, is_0rtt),
@@ -719,6 +756,18 @@ impl Future for AcceptUni<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
+
+        // TODO: Update arguments
+        QlogWriter::log_event(
+            Event::quic_10_stream_state_updated(
+                id.into(),
+                Some(StreamType::Unidirectional),
+                None,
+                StreamState::BaseStreamState(BaseStreamState::Open), 
+                Some(StreamSide::Receiving)
+            )
+        );
+
         Poll::Ready(Ok(RecvStream::new(conn, id, is_0rtt)))
     }
 }
@@ -738,6 +787,18 @@ impl Future for AcceptBi<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
+
+        // TODO: Update arguments
+        QlogWriter::log_event(
+            Event::quic_10_stream_state_updated(
+                id.into(),
+                Some(StreamType::Bidirectional),
+                None,
+                StreamState::BaseStreamState(BaseStreamState::Open), 
+                Some(StreamSide::Receiving)
+            )
+        );
+
         Poll::Ready(Ok((
             SendStream::new(conn.clone(), id, is_0rtt),
             RecvStream::new(conn, id, is_0rtt),

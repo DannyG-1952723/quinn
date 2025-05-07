@@ -202,6 +202,7 @@ impl Endpoint {
     /// See [`connect()`] for details.
     ///
     /// [`connect()`]: Endpoint::connect
+    // TODO: Maybe add connection_started log here
     pub fn connect_with(
         &self,
         config: ClientConfig,
@@ -289,6 +290,7 @@ impl Endpoint {
     /// See [`Connection::close()`] for details.
     ///
     /// [`Connection::close()`]: crate::Connection::close
+    // TODO: Maybe add connection_close log here
     pub fn close(&self, error_code: VarInt, reason: &[u8]) {
         let reason = Bytes::copy_from_slice(reason);
         let mut endpoint = self.inner.state.lock().unwrap();
@@ -407,6 +409,7 @@ pub(crate) struct EndpointInner {
 }
 
 impl EndpointInner {
+    // TODO: Maybe add log here
     pub(crate) fn accept(
         &self,
         incoming: proto::Incoming,
@@ -437,6 +440,7 @@ impl EndpointInner {
         }
     }
 
+    // TODO: Maybe add log here
     pub(crate) fn refuse(&self, incoming: proto::Incoming) {
         let mut state = self.state.lock().unwrap();
         state.stats.refused_handshakes += 1;
@@ -445,6 +449,7 @@ impl EndpointInner {
         respond(transmit, &response_buffer, &*state.socket);
     }
 
+    // TODO: Maybe add log here
     pub(crate) fn retry(&self, incoming: proto::Incoming) -> Result<(), proto::RetryError> {
         let mut state = self.state.lock().unwrap();
         let mut response_buffer = Vec::new();
@@ -453,6 +458,7 @@ impl EndpointInner {
         Ok(())
     }
 
+    // TODO: Maybe add log here
     pub(crate) fn ignore(&self, incoming: proto::Incoming) {
         let mut state = self.state.lock().unwrap();
         state.stats.ignored_handshakes += 1;
@@ -637,6 +643,7 @@ pin_project! {
 
 impl Future for Accept<'_> {
     type Output = Option<Incoming>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         let mut endpoint = this.endpoint.inner.state.lock().unwrap();
@@ -761,6 +768,7 @@ impl RecvState {
         }
     }
 
+    // TODO: Maybe add log here
     fn poll_socket(
         &mut self,
         cx: &mut Context,

@@ -24,6 +24,7 @@ impl Incoming {
     }
 
     /// Attempt to accept this incoming connection (an error may still occur)
+    // TODO: Maybe add log here
     pub fn accept(mut self) -> Result<Connecting, ConnectionError> {
         let state = self.0.take().unwrap();
         state.endpoint.accept(state.inner, None)
@@ -41,6 +42,7 @@ impl Incoming {
     }
 
     /// Reject this incoming connection attempt
+    // TODO: Maybe add log here
     pub fn refuse(mut self) {
         let state = self.0.take().unwrap();
         state.endpoint.refuse(state.inner);
@@ -49,6 +51,7 @@ impl Incoming {
     /// Respond with a retry packet, requiring the client to retry with address validation
     ///
     /// Errors if `may_retry()` is false.
+    // TODO: Maybe add log here
     pub fn retry(mut self) -> Result<(), RetryError> {
         let state = self.0.take().unwrap();
         state.endpoint.retry(state.inner).map_err(|e| {
@@ -60,6 +63,7 @@ impl Incoming {
     }
 
     /// Ignore this incoming connection attempt, not sending any packet in response
+    // TODO: Maybe add log here
     pub fn ignore(mut self) {
         let state = self.0.take().unwrap();
         state.endpoint.ignore(state.inner);
