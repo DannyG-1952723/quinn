@@ -105,6 +105,7 @@ impl RecvStream {
     /// closed.
     ///
     /// [`finish`]: crate::SendStream::finish
+    // TODO: Maybe add log here
     pub fn poll_read(
         &mut self,
         cx: &mut Context,
@@ -127,6 +128,7 @@ impl RecvStream {
     /// closed.
     ///
     /// [`finish`]: crate::SendStream::finish
+    // TODO: Maybe add log here
     pub fn poll_read_buf(
         &mut self,
         cx: &mut Context,
@@ -190,6 +192,7 @@ impl RecvStream {
     /// If no data is available for reading, the method returns `Poll::Pending`
     /// and arranges for the current task (via cx.waker()) to receive a notification
     /// when the stream becomes readable or is closed.
+    // TODO: Maybe add log here
     fn poll_read_chunk(
         &mut self,
         cx: &mut Context,
@@ -217,6 +220,7 @@ impl RecvStream {
     }
 
     /// Foundation of [`Self::read_chunks`]
+    // TODO: Maybe add log here
     fn poll_read_chunks(
         &mut self,
         cx: &mut Context,
@@ -272,6 +276,7 @@ impl RecvStream {
     ///
     /// Discards unread data and notifies the peer to stop transmitting. Once stopped, further
     /// attempts to operate on a stream will yield `ClosedStream` errors.
+    // TODO: Maybe add log here
     pub fn stop(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("RecvStream::stop");
         if self.is_0rtt && conn.check_0rtt().is_err() {
@@ -304,6 +309,7 @@ impl RecvStream {
     /// which it is no longer meaningful for the stream to be reset.
     ///
     /// This operation is cancel-safe.
+    // TODO: Maybe add log here
     pub async fn received_reset(&mut self) -> Result<Option<VarInt>, ResetError> {
         poll_fn(|cx| {
             let mut conn = self.conn.state.lock("RecvStream::reset");
@@ -345,6 +351,7 @@ impl RecvStream {
     /// the detailed read semantics for the calling function with a particular return type.
     /// The closure can read from the passed `&mut Chunks` and has to return the status after
     /// reading: the amount of data read, and the status after the final read call.
+    // TODO: Maybe add log here
     fn poll_read_generic<T, U>(
         &mut self,
         cx: &mut Context,
@@ -438,6 +445,7 @@ struct ReadToEnd<'a> {
 
 impl Future for ReadToEnd<'_> {
     type Output = Result<Vec<u8>, ReadToEndError>;
+    // TODO: Maybe add log here
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         loop {
             match ready!(self.stream.poll_read_chunk(cx, usize::MAX, false))? {
@@ -493,6 +501,7 @@ impl futures_io::AsyncRead for RecvStream {
 }
 
 impl tokio::io::AsyncRead for RecvStream {
+    // TODO: Maybe add log here
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -504,6 +513,7 @@ impl tokio::io::AsyncRead for RecvStream {
 }
 
 impl Drop for RecvStream {
+    // TODO: Maybe add log here (stream closed?)
     fn drop(&mut self) {
         let mut conn = self.conn.state.lock("RecvStream::drop");
 
@@ -639,6 +649,7 @@ struct ReadExact<'a> {
 
 impl Future for ReadExact<'_> {
     type Output = Result<(), ReadExactError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let mut remaining = this.buf.remaining();
@@ -676,6 +687,7 @@ struct ReadChunk<'a> {
 
 impl Future for ReadChunk<'_> {
     type Output = Result<Option<Chunk>, ReadError>;
+    // TODO: Maybe add log here
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let (max_length, ordered) = (self.max_length, self.ordered);
         self.stream.poll_read_chunk(cx, max_length, ordered)
@@ -692,6 +704,7 @@ struct ReadChunks<'a> {
 
 impl Future for ReadChunks<'_> {
     type Output = Result<Option<usize>, ReadError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         this.stream.poll_read_chunks(cx, this.bufs)

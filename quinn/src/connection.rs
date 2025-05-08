@@ -193,6 +193,7 @@ impl Connecting {
 
 impl Future for Connecting {
     type Output = Result<Connection, ConnectionError>;
+    // TODO: Maybe add log here
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         Pin::new(&mut self.connected).poll(cx).map(|_| {
             let conn = self.conn.take().unwrap();

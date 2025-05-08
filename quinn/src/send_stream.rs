@@ -94,6 +94,7 @@ impl SendStream {
         .await
     }
 
+    // TODO: Maybe add log here
     fn execute_poll<F, R>(&mut self, cx: &mut Context, write_fn: F) -> Poll<Result<R, WriteError>>
     where
         F: FnOnce(&mut proto::SendStream) -> Result<R, proto::WriteError>,
@@ -137,6 +138,7 @@ impl SendStream {
     /// May fail if [`finish()`](Self::finish) or [`reset()`](Self::reset) was previously
     /// called. This error is harmless and serves only to indicate that the caller may have
     /// incorrect assumptions about the stream's state.
+    // TODO: Maybe add log here (stream closed?)
     pub fn finish(&mut self) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("finish");
         match conn.inner.send_stream(self.stream).finish() {
@@ -160,6 +162,7 @@ impl SendStream {
     /// May fail if [`finish()`](Self::finish) or [`reset()`](Self::reset) was previously
     /// called. This error is harmless and serves only to indicate that the caller may have
     /// incorrect assumptions about the stream's state.
+    // TODO: Maybe add log here (stream closed?)
     pub fn reset(&mut self, error_code: VarInt) -> Result<(), ClosedStream> {
         let mut conn = self.conn.state.lock("SendStream::reset");
         if self.is_0rtt && conn.check_0rtt().is_err() {
@@ -203,6 +206,7 @@ impl SendStream {
         Stopped { stream: self }.await
     }
 
+    // TODO: Maybe add log here
     fn poll_stopped(&mut self, cx: &mut Context) -> Poll<Result<Option<VarInt>, StoppedError>> {
         let mut conn = self.conn.state.lock("SendStream::poll_stopped");
 
@@ -236,6 +240,7 @@ impl SendStream {
     /// If the stream is not ready for writing, the method returns Poll::Pending and arranges
     /// for the current task (via cx.waker().wake_by_ref()) to receive a notification when the
     /// stream becomes writable or is closed.
+    // TODO: Maybe add log here
     pub fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context,
@@ -279,6 +284,7 @@ impl tokio::io::AsyncWrite for SendStream {
 }
 
 impl Drop for SendStream {
+    // TODO: Maybe add log here
     fn drop(&mut self) {
         let mut conn = self.conn.state.lock("SendStream::drop");
 
@@ -310,6 +316,7 @@ struct Stopped<'a> {
 impl Future for Stopped<'_> {
     type Output = Result<Option<VarInt>, StoppedError>;
 
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         self.get_mut().stream.poll_stopped(cx)
     }
@@ -325,6 +332,7 @@ struct Write<'a> {
 
 impl Future for Write<'_> {
     type Output = Result<usize, WriteError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let buf = this.buf;
@@ -342,6 +350,7 @@ struct WriteAll<'a> {
 
 impl Future for WriteAll<'_> {
     type Output = Result<(), WriteError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         loop {
@@ -365,6 +374,7 @@ struct WriteChunks<'a> {
 
 impl Future for WriteChunks<'_> {
     type Output = Result<Written, WriteError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         let bufs = &mut *this.bufs;
@@ -382,6 +392,7 @@ struct WriteChunk<'a> {
 
 impl Future for WriteChunk<'_> {
     type Output = Result<(), WriteError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         loop {
@@ -405,6 +416,7 @@ struct WriteAllChunks<'a> {
 
 impl Future for WriteAllChunks<'_> {
     type Output = Result<(), WriteError>;
+    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
         let this = self.get_mut();
         loop {
