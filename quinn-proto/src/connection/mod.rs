@@ -3675,6 +3675,11 @@ impl Connection {
             new_tokens.push(self.path.remote);
         }
     }
+
+    /// Destination ConnectionId sent by the client on the first Initial
+    pub fn initial_dst_cid(&self) -> ConnectionId {
+        self.initial_dst_cid.clone()
+    }
 }
 
 impl fmt::Debug for Connection {

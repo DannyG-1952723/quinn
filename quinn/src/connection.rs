@@ -432,7 +432,8 @@ impl Connection {
                 None,
                 None,
                 None,
-                None
+                None,
+                Some(conn.inner.initial_dst_cid().to_string())
             )
         );
     }
@@ -667,6 +668,7 @@ impl Future for OpenUni<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Uni))?;
+        let cid = this.conn.state.lock("poll").inner.initial_dst_cid();
 
         // TODO: Update arguments
         QlogWriter::log_event(
@@ -675,7 +677,8 @@ impl Future for OpenUni<'_> {
                 Some(StreamType::Unidirectional),
                 None,
                 StreamState::BaseStreamState(BaseStreamState::Open), 
-                Some(StreamSide::Sending)
+                Some(StreamSide::Sending),
+                Some(cid.to_string())
             )
         );
 
@@ -697,6 +700,7 @@ impl Future for OpenBi<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_open(ctx, this.conn, this.notify, Dir::Bi))?;
+        let cid = this.conn.state.lock("poll").inner.initial_dst_cid();
 
         // TODO: Update arguments
         QlogWriter::log_event(
@@ -705,7 +709,8 @@ impl Future for OpenBi<'_> {
                 Some(StreamType::Bidirectional),
                 None,
                 StreamState::BaseStreamState(BaseStreamState::Open), 
-                Some(StreamSide::Sending)
+                Some(StreamSide::Sending),
+                Some(cid.to_string())
             )
         );
 
@@ -757,6 +762,7 @@ impl Future for AcceptUni<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Uni))?;
+        let cid = this.conn.state.lock("poll").inner.initial_dst_cid();
 
         // TODO: Update arguments
         QlogWriter::log_event(
@@ -765,7 +771,8 @@ impl Future for AcceptUni<'_> {
                 Some(StreamType::Unidirectional),
                 None,
                 StreamState::BaseStreamState(BaseStreamState::Open), 
-                Some(StreamSide::Receiving)
+                Some(StreamSide::Receiving),
+                Some(cid.to_string())
             )
         );
 
@@ -788,6 +795,7 @@ impl Future for AcceptBi<'_> {
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
         let (conn, id, is_0rtt) = ready!(poll_accept(ctx, this.conn, this.notify, Dir::Bi))?;
+        let cid = this.conn.state.lock("poll").inner.initial_dst_cid();
 
         // TODO: Update arguments
         QlogWriter::log_event(
@@ -796,7 +804,8 @@ impl Future for AcceptBi<'_> {
                 Some(StreamType::Bidirectional),
                 None,
                 StreamState::BaseStreamState(BaseStreamState::Open), 
-                Some(StreamSide::Receiving)
+                Some(StreamSide::Receiving),
+                Some(cid.to_string())
             )
         );
 
