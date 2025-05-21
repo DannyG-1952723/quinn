@@ -25,6 +25,7 @@ use proto::{
     self as proto, ClientConfig, ConnectError, ConnectionError, ConnectionHandle, DatagramEvent,
     EndpointEvent, ServerConfig,
 };
+use qlog_rs::{events::Event, quic_10::data::PathEndpointInfo, writer::QlogWriter};
 use rustc_hash::FxHashMap;
 #[cfg(all(not(wasm_browser), any(feature = "aws-lc-rs", feature = "ring"),))]
 use socket2::{Domain, Protocol, Socket, Type};
@@ -225,6 +226,14 @@ impl Endpoint {
         let (ch, conn) = endpoint
             .inner
             .connect(self.runtime.now(), config, addr, server_name)?;
+
+        // Could also call `self.local_addr()` but this seems to cause an endless loop
+        let local = PathEndpointInfo::from(conn.local_ip());
+        let remote = PathEndpointInfo::from(addr);
+        let cid = conn.initial_dst_cid().to_string();
+
+        // TODO: Maybe update arguments
+        QlogWriter::log_event(Event::quic_10_connection_started(local, remote, Some(cid)));
 
         let socket = endpoint.socket.clone();
         endpoint.stats.outgoing_handshakes += 1;
@@ -654,6 +663,14 @@ impl Future for Accept<'_> {
             // Release the mutex lock on endpoint so cloning it doesn't deadlock
             drop(endpoint);
             let incoming = Incoming::new(incoming, this.endpoint.inner.clone());
+
+            let local = PathEndpointInfo::from(incoming.local_ip());
+            let remote = PathEndpointInfo::from(incoming.remote_address());
+            let cid = incoming.orig_dst_cid().to_string();
+
+            // TODO: Maybe update arguments
+            QlogWriter::log_event(Event::quic_10_connection_started(local, remote, Some(cid)));
+
             return Poll::Ready(Some(incoming));
         }
         if endpoint.recv_state.connections.close.is_some() {
