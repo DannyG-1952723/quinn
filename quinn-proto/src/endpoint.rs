@@ -1,13 +1,14 @@
 use std::{
-    collections::{HashMap, hash_map},
+    collections::{hash_map, HashMap},
     convert::TryFrom,
     fmt, mem,
     net::{IpAddr, SocketAddr},
     ops::{Index, IndexMut},
-    sync::Arc,
+    sync::Arc, u64,
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
+use qlog_rs::writer::PacketNum;
 use rand::{Rng, RngCore, SeedableRng, rngs::StdRng};
 use rustc_hash::FxHashMap;
 use slab::Slab;
@@ -179,6 +180,7 @@ impl Endpoint {
                 }
                 .encode(buf);
                 // Grease with a reserved version
+                // TODO: See how to log VERSION_NEGOTIATION
                 buf.write::<u32>(match version {
                     0x0a1a_2a3a => 0x0a1a_2a4a,
                     _ => 0x0a1a_2a3a,
@@ -192,6 +194,8 @@ impl Endpoint {
                     size: buf.len(),
                     segment_size: None,
                     src_ip: local_ip,
+                    // TODO: Find better solution (Version Negotiation packets don't have packet numbers)
+                    packet_nums: vec![PacketNum::VersionNegotiation]
                 }));
             }
             Err(e) => {
@@ -317,6 +321,8 @@ impl Endpoint {
             size: buf.len(),
             segment_size: None,
             src_ip: addresses.local_ip,
+            // TODO: Find better solution (Stateless Resets don't have packet numbers)
+            packet_nums: vec![PacketNum::StatelessReset]
         })
     }
 
@@ -765,6 +771,8 @@ impl Endpoint {
             size: buf.len(),
             segment_size: None,
             src_ip: incoming.addresses.local_ip,
+            // TODO: Find better solution (Retry packets don't have a packet number)
+            packet_nums: vec![PacketNum::Retry]
         })
     }
 
@@ -870,7 +878,8 @@ impl Endpoint {
         let partial_encode = header.encode(buf);
         let max_len =
             INITIAL_MTU as usize - partial_encode.header_len - crypto.packet.local.tag_len();
-        frame::Close::from(reason).encode(buf, max_len);
+        // TODO: Check if these are right
+        frame::Close::from(reason).encode(buf, max_len, *remote_id, PacketNum::Number(number.into()));
         buf.resize(buf.len() + crypto.packet.local.tag_len(), 0);
         partial_encode.finish(buf, &*crypto.header.local, Some((0, &*crypto.packet.local)));
         Transmit {
@@ -879,6 +888,8 @@ impl Endpoint {
             size: buf.len(),
             segment_size: None,
             src_ip: addresses.local_ip,
+            // Should always work since this is an Initial header
+            packet_nums: vec![PacketNum::Number(header.number().unwrap().into())]
         }
     }
 

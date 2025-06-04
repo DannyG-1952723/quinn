@@ -7,6 +7,8 @@ use std::{
     time::Instant,
 };
 
+use proto::ConnectionId;
+use qlog_rs::writer::PacketNum;
 use tokio::{
     io::Interest,
     time::{Sleep, sleep_until},
@@ -62,9 +64,9 @@ impl AsyncUdpSocket for UdpSocket {
         }))
     }
 
-    fn try_send(&self, transmit: &udp::Transmit) -> io::Result<()> {
+    fn try_send(&self, transmit: &udp::Transmit, initial_dst_cid: ConnectionId, packet_nums: Vec<PacketNum>) -> io::Result<()> {
         self.io.try_io(Interest::WRITABLE, || {
-            self.inner.send((&self.io).into(), transmit)
+            self.inner.send((&self.io).into(), transmit, initial_dst_cid.to_string(), packet_nums)
         })
     }
 

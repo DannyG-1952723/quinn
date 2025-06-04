@@ -14,6 +14,8 @@ use std::{
 
 use socket2::SockRef;
 
+use qlog_rs::{writer::{PacketNum, QlogWriter}};
+
 use super::{
     EcnCodepoint, IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef, cmsg, log_sendmsg_error,
 };
@@ -204,8 +206,8 @@ impl UdpSocketState {
     ///
     /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
-    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        match send(self, socket.0, transmit) {
+    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<(), cid: String, packet_nums: Vec<PacketNum>> {
+        match send(self, socket.0, transmit, cid, packet_nums) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid
@@ -220,8 +222,8 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
-    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        send(self, socket.0, transmit)
+    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+        send(self, socket.0, transmit, cid, packet_nums)
     }
 
     pub fn recv(
@@ -302,7 +304,11 @@ fn send(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
+    cid: String,
+    packet_nums: Vec<PacketNum>,
 ) -> io::Result<()> {
+    QlogWriter::log_quic_packets(cid, packet_nums);
+
     #[allow(unused_mut)] // only mutable on FreeBSD
     let mut encode_src_ip = true;
     #[cfg(target_os = "freebsd")]

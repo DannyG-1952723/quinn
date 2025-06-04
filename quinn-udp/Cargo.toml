@@ -24,6 +24,7 @@ fast-apple-datapath = []
 libc = "0.2.158"
 log = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }
+qlog-rs = { path = "../../qlog-rs", version = "0.5", features = ["quic-10"] }
 
 [target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies]
 socket2 = { workspace = true }

@@ -10,6 +10,7 @@ use std::{
 
 use libc::{c_int, c_uint};
 use once_cell::sync::Lazy;
+use qlog_rs::{writer::{PacketNum, QlogWriter}};
 use windows_sys::Win32::Networking::WinSock;
 
 use crate::{
@@ -152,8 +153,8 @@ impl UdpSocketState {
     ///
     /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
-    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        match send(socket, transmit) {
+    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+        match send(socket, transmit, cid, packet_nums) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             Err(e) => {
@@ -165,8 +166,8 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
-    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        send(socket, transmit)
+    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+        send(socket, transmit, cid, packet_nums)
     }
 
     pub fn recv(
@@ -322,7 +323,9 @@ impl UdpSocketState {
     }
 }
 
-fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+    QlogWriter::log_quic_packets(cid, packet_nums);
+
     // we cannot use [`socket2::sendmsg()`] and [`socket2::MsgHdr`] as we do not have access
     // to the inner field which holds the WSAMSG
     let mut ctrl_buf = cmsg::Aligned([0; CMSG_LEN]);

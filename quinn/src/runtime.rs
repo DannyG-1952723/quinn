@@ -8,6 +8,8 @@ use std::{
     task::{Context, Poll},
 };
 
+use proto::ConnectionId;
+use qlog_rs::writer::PacketNum;
 use udp::{RecvMeta, Transmit};
 
 use crate::Instant;
@@ -55,7 +57,7 @@ pub trait AsyncUdpSocket: Send + Sync + Debug + 'static {
     ///
     /// If this returns [`io::ErrorKind::WouldBlock`], [`UdpPoller::poll_writable`] must be called
     /// to register the calling task to be woken when a send should be attempted again.
-    fn try_send(&self, transmit: &Transmit) -> io::Result<()>;
+    fn try_send(&self, transmit: &Transmit, initial_dst_cid: ConnectionId, packet_num: Vec<PacketNum>) -> io::Result<()>;
 
     /// Receive UDP datagrams, or register to be woken if receiving may succeed in the future
     fn poll_recv(

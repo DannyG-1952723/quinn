@@ -1,13 +1,13 @@
 use std::collections::VecDeque;
 
 use bytes::Bytes;
+use qlog_rs::writer::PacketNum;
 use thiserror::Error;
 use tracing::{debug, trace};
 
 use super::Connection;
 use crate::{
-    TransportError,
-    frame::{Datagram, FrameStruct},
+    frame::{Datagram, FrameStruct}, ConnectionId, TransportError
 };
 
 /// API to control datagram traffic
@@ -163,7 +163,7 @@ impl DatagramState {
     ///
     /// Returns whether a frame was written. At most `max_size` bytes will be written, including
     /// framing.
-    pub(super) fn write(&mut self, buf: &mut Vec<u8>, max_size: usize) -> bool {
+    pub(super) fn write(&mut self, buf: &mut Vec<u8>, max_size: usize, initial_dst_cid: ConnectionId, packet_num: PacketNum) -> bool {
         let datagram = match self.outgoing.pop_front() {
             Some(x) => x,
             None => return false,
@@ -179,7 +179,7 @@ impl DatagramState {
         trace!(len = datagram.data.len(), "DATAGRAM");
 
         self.outgoing_total -= datagram.data.len();
-        datagram.encode(true, buf);
+        datagram.encode(true, buf, initial_dst_cid, packet_num);
         true
     }
 

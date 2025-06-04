@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::BufMut;
+use qlog_rs::{quic_10::data::{MaxDataFrame, MaxStreamDataFrame, MaxStreamsFrame, QuicBaseFrame, QuicFrame}, writer::{PacketNum, QlogWriter}};
 use rustc_hash::FxHashMap;
 use tracing::{debug, trace};
 
@@ -13,11 +14,7 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::{
-    Dir, MAX_STREAM_COUNT, Side, StreamId, TransportError, VarInt,
-    coding::BufMutExt,
-    connection::stats::FrameStats,
-    frame::{self, FrameStruct, StreamMetaVec},
-    transport_parameters::TransportParameters,
+    coding::BufMutExt, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, ConnectionId, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
 };
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
@@ -248,6 +245,7 @@ impl StreamsState {
     /// Process incoming stream frame
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted
+    // TODO: Check this function
     pub(crate) fn received(
         &mut self,
         frame: frame::Stream,
@@ -298,6 +296,7 @@ impl StreamsState {
     /// Process incoming RESET_STREAM frame
     ///
     /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted
+    // TODO: Check this function
     #[allow(unreachable_pub)] // fuzzing only
     pub fn received_reset(
         &mut self,
@@ -358,6 +357,7 @@ impl StreamsState {
     }
 
     /// Process incoming `STOP_SENDING` frame
+    // TODO: Check this function
     #[allow(unreachable_pub)] // fuzzing only
     pub fn received_stop_sending(&mut self, id: StreamId, error_code: VarInt) {
         let max_send_data = self.max_send_data(id);
@@ -409,6 +409,7 @@ impl StreamsState {
             .is_some_and(|s| s.can_send_flow_control())
     }
 
+    // TODO: Check this function
     pub(in crate::connection) fn write_control_frames(
         &mut self,
         buf: &mut Vec<u8>,
@@ -416,6 +417,8 @@ impl StreamsState {
         retransmits: &mut ThinRetransmits,
         stats: &mut FrameStats,
         max_size: usize,
+        initial_dst_cid: ConnectionId,
+        packet_num: u64,
     ) {
         // RESET_STREAM
         while buf.len() + frame::ResetStream::SIZE_BOUND < max_size {
@@ -437,7 +440,7 @@ impl StreamsState {
                 error_code,
                 final_offset: VarInt::try_from(stream.offset()).expect("impossibly large offset"),
             }
-            .encode(buf);
+            .encode(buf, initial_dst_cid, PacketNum::Number(packet_num));
             stats.reset_stream += 1;
         }
 
@@ -455,7 +458,7 @@ impl StreamsState {
             // peer, but we discard that information as soon as the application consumes it, so it
             // can't be relied upon regardless.
             trace!(stream = %frame.id, "STOP_SENDING");
-            frame.encode(buf);
+            frame.encode(buf, initial_dst_cid, PacketNum::Number(packet_num));
             retransmits.get_or_create().stop_sending.push(frame);
             stats.stop_sending += 1;
         }
@@ -478,6 +481,10 @@ impl StreamsState {
             }
 
             retransmits.get_or_create().max_data = true;
+
+            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxDataFrame(MaxDataFrame::new(max.into_inner(), None)));
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+
             buf.write(frame::FrameType::MAX_DATA);
             buf.write(max);
             stats.max_data += 1;
@@ -508,6 +515,10 @@ impl StreamsState {
             rs.record_sent_max_stream_data(max);
 
             trace!(stream = %id, max = max, "MAX_STREAM_DATA");
+
+            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamDataFrame(MaxStreamDataFrame::new(id.into(), max, None)));
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+
             buf.write(frame::FrameType::MAX_STREAM_DATA);
             buf.write(id);
             buf.write_var(max);
@@ -527,6 +538,10 @@ impl StreamsState {
                 value = self.max_remote[dir as usize],
                 "MAX_STREAMS ({:?})", dir
             );
+
+            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamsFrame(MaxStreamsFrame::new(dir.into(), self.max_remote[dir as usize], None)));
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+
             buf.write(match dir {
                 Dir::Uni => frame::FrameType::MAX_STREAMS_UNI,
                 Dir::Bi => frame::FrameType::MAX_STREAMS_BIDI,
@@ -539,6 +554,7 @@ impl StreamsState {
         }
     }
 
+    // TODO: Check this function
     pub(crate) fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,

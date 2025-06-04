@@ -6,6 +6,7 @@ use std::{
     slice,
 };
 
+use qlog_rs::writer::PacketNum;
 use quinn_udp::{EcnCodepoint, RecvMeta, Transmit, UdpSocketState};
 use socket2::Socket;
 
@@ -289,7 +290,7 @@ fn test_send_recv(send: &Socket, recv: &Socket, transmit: Transmit) {
     // Reverse non-blocking flag set by `UdpSocketState` to make the test non-racy
     recv.set_nonblocking(false).unwrap();
 
-    send_state.try_send(send.into(), &transmit).unwrap();
+    send_state.try_send(send.into(), &transmit, "Test".to_string(), vec![PacketNum::Number(0)]).unwrap();
 
     let mut buf = [0; u16::MAX as usize];
     let mut meta = RecvMeta::default();

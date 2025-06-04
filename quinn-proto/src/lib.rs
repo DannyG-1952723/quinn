@@ -35,6 +35,7 @@ mod tests;
 pub mod transport_parameters;
 mod varint;
 
+use qlog_rs::{quic_10::data::StreamType, writer::PacketNum};
 pub use varint::{VarInt, VarIntBoundsExceeded};
 
 mod connection;
@@ -215,6 +216,15 @@ impl fmt::Display for Dir {
     }
 }
 
+impl Into<StreamType> for Dir {
+    fn into(self) -> StreamType {
+        match self {
+            Dir::Bi => StreamType::Bidirectional,
+            Dir::Uni => StreamType::Unidirectional,
+        }
+    }
+}
+
 /// Identifier for a stream within a particular connection
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -291,7 +301,8 @@ impl coding::Codec for StreamId {
 }
 
 /// An outgoing packet
-#[derive(Debug)]
+// TODO: Check if Clone is needed
+#[derive(Clone, Debug)]
 #[must_use]
 pub struct Transmit {
     /// The socket this datagram should be sent to
@@ -305,6 +316,8 @@ pub struct Transmit {
     pub segment_size: Option<usize>,
     /// Optional source IP address for the datagram
     pub src_ip: Option<IpAddr>,
+    /// Packet number needed for logging
+    pub packet_nums: Vec<PacketNum>,
 }
 
 //

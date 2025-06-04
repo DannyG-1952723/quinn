@@ -5,6 +5,7 @@ use std::{
 };
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use qlog_rs::writer::PacketNum;
 use tokio::{io::Interest, runtime::Runtime};
 
 use quinn_udp::{BATCH_SIZE, RecvMeta, Transmit, UdpSocketState};
@@ -87,7 +88,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     send_socket.writable().await.unwrap();
                     send_socket
                         .try_io(Interest::WRITABLE, || {
-                            send_state.send((&send_socket).into(), &transmit)
+                            send_state.send((&send_socket).into(), &transmit, "Test".to_string(), vec![PacketNum::Number(0)])
                         })
                         .unwrap();
                     sent += transmit.contents.len();

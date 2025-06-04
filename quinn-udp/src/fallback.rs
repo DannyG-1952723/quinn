@@ -4,6 +4,8 @@ use std::{
     time::Instant,
 };
 
+use qlog_rs::{writer::{PacketNum, QlogWriter}};
+
 use super::{IO_ERROR_LOG_INTERVAL, RecvMeta, Transmit, UdpSockRef, log_sendmsg_error};
 
 /// Fallback UDP socket interface that stubs out all special functionality
@@ -35,8 +37,8 @@ impl UdpSocketState {
     ///
     /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
-    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        match send(socket, transmit) {
+    pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+        match send(socket, transmit, cid, packet_nums) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             Err(e) => {
@@ -48,8 +50,8 @@ impl UdpSocketState {
     }
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
-    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        send(socket, transmit)
+    pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+        send(socket, transmit, cid, packet_nums)
     }
 
     pub fn recv(
@@ -116,7 +118,9 @@ impl UdpSocketState {
     }
 }
 
-fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
+fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
+    QlogWriter::log_quic_packets(cid, packet_nums);
+
     socket.0.send_to(
         transmit.contents,
         &socket2::SockAddr::from(transmit.destination),

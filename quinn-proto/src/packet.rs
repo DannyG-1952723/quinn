@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, io, ops::Range, str};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use qlog_rs::quic_10::data::PacketType;
 use thiserror::Error;
 
 use crate::{
@@ -109,6 +110,7 @@ impl PartialDecode {
         self.buf.get_ref().len()
     }
 
+    // TODO: Check this function (might be interesting for logs, decoded header)
     pub(crate) fn finish(
         self,
         header_crypto: Option<&dyn crypto::HeaderKey>,
@@ -281,6 +283,7 @@ pub(crate) enum Header {
 }
 
 impl Header {
+    // TODO: Check this function (might be interesting for logs, write header)
     pub(crate) fn encode(&self, w: &mut Vec<u8>) -> PartialEncode {
         use Header::*;
         let start = w.len();
@@ -436,6 +439,17 @@ impl Header {
         )
     }
 
+    pub(crate) fn src_cid(&self) -> Option<ConnectionId> {
+        use Header::*;
+        match *self {
+            Initial(InitialHeader { src_cid, .. }) => Some(src_cid),
+            Long { src_cid, .. } => Some(src_cid),
+            Retry { src_cid, .. } => Some(src_cid),
+            Short { .. } => None,
+            VersionNegotiate { src_cid, .. } => Some(src_cid),
+        }
+    }
+
     pub(crate) fn dst_cid(&self) -> ConnectionId {
         use Header::*;
         match *self {
@@ -575,6 +589,7 @@ impl ProtectedHeader {
     }
 
     /// Decode a plain header from given buffer, with given [`ConnectionIdParser`].
+    // TODO: Check this function (might be interesting for logs)
     pub fn decode(
         buf: &mut io::Cursor<BytesMut>,
         cid_parser: &(impl ConnectionIdParser + ?Sized),
@@ -780,6 +795,28 @@ impl PacketNumber {
     }
 }
 
+impl Into<u32> for PacketNumber {
+    fn into(self) -> u32 {
+        match self {
+            PacketNumber::U8(v) => v as u32,
+            PacketNumber::U16(v) => v as u32,
+            PacketNumber::U24(v) => v as u32, // Note: U24 is using u32 internally
+            PacketNumber::U32(v) => v as u32,
+        }
+    }
+}
+
+impl Into<u64> for PacketNumber {
+    fn into(self) -> u64 {
+        match self {
+            PacketNumber::U8(v) => v as u64,
+            PacketNumber::U16(v) => v as u64,
+            PacketNumber::U24(v) => v as u64, // Note: U24 is using u32 internally
+            PacketNumber::U32(v) => v as u64,
+        }
+    }
+}
+
 /// A [`ConnectionIdParser`] implementation that assumes the connection ID is of fixed length
 pub struct FixedLengthConnectionIdParser {
     expected_len: usize,
@@ -893,6 +930,17 @@ pub enum SpaceId {
 impl SpaceId {
     pub fn iter() -> impl Iterator<Item = Self> {
         [Self::Initial, Self::Handshake, Self::Data].iter().cloned()
+    }
+}
+
+// TODO: Check if this is correct to do since these don't fully match
+impl Into<PacketType> for SpaceId {
+    fn into(self) -> PacketType {
+        match self {
+            SpaceId::Initial => PacketType::Initial,
+            SpaceId::Handshake => PacketType::Handshake,
+            SpaceId::Data => PacketType::OneRtt,
+        }
     }
 }
 

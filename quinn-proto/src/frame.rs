@@ -5,6 +5,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes};
+use qlog_rs::{quic_10::data::{AckFrame, ApplicationError, ConnectionCloseFrame, CryptoFrame, DatagramFrame, NewConnectionIdFrame, NewTokenFrame, QuicBaseFrame, QuicFrame, ResetStreamFrame, StopSendingFrame, Token}, writer::{PacketNum, QlogWriter}};
 use tinyvec::TinyVec;
 
 use crate::{
@@ -220,9 +221,9 @@ pub enum Close {
 }
 
 impl Close {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         match *self {
-            Self::Connection(ref x) => x.encode(out, max_len),
+            Self::Connection(ref x) => x.encode(out, max_len, initial_dst_cid, packet_num),
             Self::Application(ref x) => x.encode(out, max_len),
         }
     }
@@ -285,7 +286,10 @@ impl FrameStruct for ConnectionClose {
 }
 
 impl ConnectionClose {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ConnectionCloseFrame(ConnectionCloseFrame::new(None, None, Some(self.error_code.into()), Some(String::from_utf8_lossy(&self.reason).to_string()), None, None, None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::CONNECTION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
         let ty = self.frame_type.map_or(0, |x| x.0);
@@ -328,6 +332,7 @@ impl FrameStruct for ApplicationClose {
 }
 
 impl ApplicationClose {
+    // TODO: Check this function (might be interesting for logs, write frame)
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize) {
         out.write(FrameType::APPLICATION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
@@ -383,11 +388,16 @@ impl Ack {
         ranges: &ArrayRangeSet,
         ecn: Option<&EcnCounts>,
         buf: &mut W,
+        initial_dst_cid: ConnectionId,
+        packet_num: PacketNum
     ) {
         let mut rest = ranges.iter().rev();
         let first = rest.next().unwrap();
         let largest = first.end - 1;
         let first_size = first.end - first.start;
+
+        let mut acked_ranges: Vec<Vec<u64>> = Vec::default();
+
         buf.write(if ecn.is_some() {
             FrameType::ACK_ECN
         } else {
@@ -397,16 +407,34 @@ impl Ack {
         buf.write_var(delay);
         buf.write_var(ranges.len() as u64 - 1);
         buf.write_var(first_size - 1);
+
+        if first.end - 1 == first.start {
+            acked_ranges.insert(0, vec![first.start]);
+        } else {
+            acked_ranges.insert(0, vec![first.start, first.end - 1]);
+        }
+
         let mut prev = first.start;
         for block in rest {
             let size = block.end - block.start;
             buf.write_var(prev - block.end - 1);
             buf.write_var(size - 1);
+
+            if block.end - 1 == block.start {
+                acked_ranges.insert(0, vec![block.start]);
+            } else {
+                acked_ranges.insert(0, vec![block.start, block.end - 1]);
+            }
+
             prev = block.start;
         }
         if let Some(x) = ecn {
             x.encode(buf)
         }
+
+        // TODO: Update values
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::AckFrame(AckFrame::new(Some(delay as f32), Some(acked_ranges), None, None, None, None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
     }
 
     pub fn iter(&self) -> AckIter<'_> {
@@ -483,6 +511,7 @@ impl Default for StreamMeta {
 }
 
 impl StreamMeta {
+    // TODO: Maybe log something here
     pub(crate) fn encode<W: BufMut>(&self, length: bool, out: &mut W) {
         let mut ty = *STREAM_TYS.start();
         if self.offsets.start != 0 {
@@ -502,6 +531,8 @@ impl StreamMeta {
         if length {
             out.write_var(self.offsets.end - self.offsets.start); // <=8 bytes
         }
+
+        println!("STREAM META: ty = {}, id = {}, offset start = {}, offset end = {}", ty, self.id, self.offsets.start, self.offsets.end);
     }
 }
 
@@ -517,7 +548,10 @@ pub(crate) struct Crypto {
 impl Crypto {
     pub(crate) const SIZE_BOUND: usize = 17;
 
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::CryptoFrame(CryptoFrame::new(self.offset, self.data.len() as u64, None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::CRYPTO);
         out.write_var(self.offset);
         out.write_var(self.data.len() as u64);
@@ -531,7 +565,11 @@ pub(crate) struct NewToken {
 }
 
 impl NewToken {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let token = Token::new(None, None, None);
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewTokenFrame(NewTokenFrame::new(token, None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::NEW_TOKEN);
         out.write_var(self.token.len() as u64);
         out.put_slice(&self.token);
@@ -572,6 +610,7 @@ impl Iter {
         Ok(self.bytes.split_to(len as usize))
     }
 
+    // TODO: Check this function (DECODING FRAMES FROM BUFFER)
     fn try_next(&mut self) -> Result<Frame, IterErr> {
         let ty = self.bytes.get::<FrameType>()?;
         self.last_ty = Some(ty);
@@ -839,7 +878,10 @@ impl FrameStruct for ResetStream {
 }
 
 impl ResetStream {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ResetStreamFrame(ResetStreamFrame::new(self.id.0, ApplicationError::Unknown, Some(self.error_code.into()), self.final_offset.into(), None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::RESET_STREAM); // 1 byte
         out.write(self.id); // <= 8 bytes
         out.write(self.error_code); // <= 8 bytes
@@ -858,7 +900,10 @@ impl FrameStruct for StopSending {
 }
 
 impl StopSending {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StopSendingFrame(StopSendingFrame::new(self.id.0, ApplicationError::Unknown, Some(self.error_code.into()), None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::STOP_SENDING); // 1 byte
         out.write(self.id); // <= 8 bytes
         out.write(self.error_code) // <= 8 bytes
@@ -874,7 +919,10 @@ pub(crate) struct NewConnectionId {
 }
 
 impl NewConnectionId {
-    pub(crate) fn encode<W: BufMut>(&self, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewConnectionIdFrame(NewConnectionIdFrame::new(self.sequence.try_into().unwrap(), self.retire_prior_to.try_into().unwrap(), Some(self.id.len() as u8), self.id.to_string(), Some(self.reset_token.to_string()), None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType::NEW_CONNECTION_ID);
         out.write_var(self.sequence);
         out.write_var(self.retire_prior_to);
@@ -899,7 +947,12 @@ impl FrameStruct for Datagram {
 }
 
 impl Datagram {
-    pub(crate) fn encode(&self, length: bool, out: &mut Vec<u8>) {
+    // TODO: Check this function (might be interesting for logs, write frame)
+    pub(crate) fn encode(&self, length: bool, out: &mut Vec<u8>, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
+        // TODO: Check if this is right
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::DatagramFrame(DatagramFrame::new(Some(self.data.len().try_into().unwrap()), None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+
         out.write(FrameType(*DATAGRAM_TYS.start() | u64::from(length))); // 1 byte
         if length {
             // Safe to unwrap because we check length sanity before queueing datagrams
@@ -926,6 +979,7 @@ pub(crate) struct AckFrequency {
 }
 
 impl AckFrequency {
+    // TODO: Check this function (might be interesting for logs, write frame)
     pub(crate) fn encode<W: BufMut>(&self, buf: &mut W) {
         buf.write(FrameType::ACK_FREQUENCY);
         buf.write(self.sequence);
@@ -961,7 +1015,7 @@ mod test {
             ect1: 24,
             ce: 12,
         };
-        Ack::encode(42, &ranges, Some(&ECN), &mut buf);
+        Ack::encode(42, &ranges, Some(&ECN), &mut buf, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
         let frames = frames(buf);
         assert_eq!(frames.len(), 1);
         match frames[0] {

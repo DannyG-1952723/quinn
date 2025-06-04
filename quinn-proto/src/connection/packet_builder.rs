@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use qlog_rs::{events::RawInfo, quic_10::{data::{PacketHeader, PacketType, PaddingFrame, QuicBaseFrame, QuicFrame, Token}, events::PacketSent}, writer::{PacketNum, QlogWriter}};
 use rand::Rng;
 use tracing::{trace, trace_span};
 
@@ -122,6 +123,52 @@ impl PacketBuilder {
                 version,
             }),
         };
+
+        // TODO: Update values
+        let token  = match header {
+            Header::Initial(ref init_header) => Some(Token::new(None, None, Some(RawInfo::new(Some(init_header.token.len() as u64), None)))),
+            _ => None
+        };
+
+        let packet_type = if header.is_0rtt() {
+            PacketType::ZeroRtt
+        } else if header.is_1rtt() {
+            PacketType::OneRtt
+        } else {
+            header.space().into()
+        };
+
+        // TODO: Update values
+        let log_header = PacketHeader::new(
+            None,
+            packet_type,
+            None,
+            Some(exact_number),
+            None,
+            token,
+            // TODO: Add payload length to this
+            Some((number.len() + 0).try_into().unwrap()),
+            Some(version.to_string()),
+            None,
+            None,
+            header.src_cid().map(|scid| format!("{}", scid.to_string())),
+            Some(format!("{}", dst_cid.to_string()))
+        );
+
+        // TODO: Update values
+        let log_packet = PacketSent::new(
+            log_header,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        );
+
+        QlogWriter::cache_quic_packet(conn.initial_dst_cid.to_string(), PacketNum::Number(number.into()), log_packet);
+
         let partial_encode = header.encode(buffer);
         if conn.peer_params.grease_quic_bit && conn.rng.random() {
             buffer[partial_encode.start] ^= FIXED_BIT;
@@ -186,11 +233,12 @@ impl PacketBuilder {
         conn: &mut Connection,
         sent: Option<SentFrames>,
         buffer: &mut Vec<u8>,
+        initial_dst_cid: ConnectionId,
     ) {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
-        let (size, padded) = self.finish(conn, buffer);
+        let (size, padded) = self.finish(conn, buffer, initial_dst_cid);
         let sent = match sent {
             Some(sent) => sent,
             None => return,
@@ -228,10 +276,14 @@ impl PacketBuilder {
     }
 
     /// Encrypt packet, returning the length of the packet and whether padding was added
-    pub(super) fn finish(self, conn: &mut Connection, buffer: &mut Vec<u8>) -> (usize, bool) {
+    pub(super) fn finish(self, conn: &mut Connection, buffer: &mut Vec<u8>, initial_dst_cid: ConnectionId) -> (usize, bool) {
         let pad = buffer.len() < self.min_size;
         if pad {
             trace!("PADDING * {}", self.min_size - buffer.len());
+
+            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PaddingFrame(PaddingFrame::new(Some(RawInfo::new(Some((self.min_size - buffer.len()).try_into().unwrap()), None)))));
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(self.exact_number), frame);
+
             buffer.resize(self.min_size, 0);
         }
 

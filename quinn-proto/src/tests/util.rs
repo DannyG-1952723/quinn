@@ -693,6 +693,7 @@ fn split_transmit(transmit: Transmit, buffer: &[u8]) -> Vec<(Transmit, Bytes)> {
                 ecn: transmit.ecn,
                 segment_size: None,
                 src_ip: transmit.src_ip,
+                packet_nums: transmit.packet_nums.clone(),
             },
             contents,
         ));
