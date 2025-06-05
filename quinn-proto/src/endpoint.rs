@@ -879,7 +879,7 @@ impl Endpoint {
         let max_len =
             INITIAL_MTU as usize - partial_encode.header_len - crypto.packet.local.tag_len();
         // TODO: Check if these are right
-        frame::Close::from(reason).encode(buf, max_len, *remote_id, PacketNum::Number(number.into()));
+        frame::Close::from(reason).encode(buf, max_len, *remote_id, PacketNum::Number(header.space().into(), number.into()));
         buf.resize(buf.len() + crypto.packet.local.tag_len(), 0);
         partial_encode.finish(buf, &*crypto.header.local, Some((0, &*crypto.packet.local)));
         Transmit {
@@ -889,7 +889,7 @@ impl Endpoint {
             segment_size: None,
             src_ip: addresses.local_ip,
             // Should always work since this is an Initial header
-            packet_nums: vec![PacketNum::Number(header.number().unwrap().into())]
+            packet_nums: vec![PacketNum::Number(header.space().into(), header.number().unwrap().into())]
         }
     }
 

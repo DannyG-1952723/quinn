@@ -167,7 +167,7 @@ impl PacketBuilder {
             None
         );
 
-        QlogWriter::cache_quic_packet(conn.initial_dst_cid.to_string(), PacketNum::Number(number.into()), log_packet);
+        QlogWriter::cache_quic_packet(conn.initial_dst_cid.to_string(), PacketNum::Number(header.space().into(), number.into()), log_packet);
 
         let partial_encode = header.encode(buffer);
         if conn.peer_params.grease_quic_bit && conn.rng.random() {
@@ -282,7 +282,7 @@ impl PacketBuilder {
             trace!("PADDING * {}", self.min_size - buffer.len());
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PaddingFrame(PaddingFrame::new(Some(RawInfo::new(Some((self.min_size - buffer.len()).try_into().unwrap()), None)))));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(self.exact_number), frame);
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(self.space.into(), self.exact_number), frame);
 
             buffer.resize(self.min_size, 0);
         }

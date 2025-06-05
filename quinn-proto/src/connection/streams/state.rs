@@ -14,7 +14,7 @@ use super::{
     StreamHalf, ThinRetransmits,
 };
 use crate::{
-    coding::BufMutExt, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, transport_parameters::TransportParameters, ConnectionId, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
+    coding::BufMutExt, connection::stats::FrameStats, frame::{self, FrameStruct, StreamMetaVec}, packet::SpaceId, transport_parameters::TransportParameters, ConnectionId, Dir, Side, StreamId, TransportError, VarInt, MAX_STREAM_COUNT
 };
 
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
@@ -419,6 +419,7 @@ impl StreamsState {
         max_size: usize,
         initial_dst_cid: ConnectionId,
         packet_num: u64,
+        space_id: SpaceId,
     ) {
         // RESET_STREAM
         while buf.len() + frame::ResetStream::SIZE_BOUND < max_size {
@@ -440,7 +441,7 @@ impl StreamsState {
                 error_code,
                 final_offset: VarInt::try_from(stream.offset()).expect("impossibly large offset"),
             }
-            .encode(buf, initial_dst_cid, PacketNum::Number(packet_num));
+            .encode(buf, initial_dst_cid, PacketNum::Number(space_id.into(), packet_num));
             stats.reset_stream += 1;
         }
 
@@ -458,7 +459,7 @@ impl StreamsState {
             // peer, but we discard that information as soon as the application consumes it, so it
             // can't be relied upon regardless.
             trace!(stream = %frame.id, "STOP_SENDING");
-            frame.encode(buf, initial_dst_cid, PacketNum::Number(packet_num));
+            frame.encode(buf, initial_dst_cid, PacketNum::Number(space_id.into(), packet_num));
             retransmits.get_or_create().stop_sending.push(frame);
             stats.stop_sending += 1;
         }
@@ -483,7 +484,7 @@ impl StreamsState {
             retransmits.get_or_create().max_data = true;
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxDataFrame(MaxDataFrame::new(max.into_inner(), None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(frame::FrameType::MAX_DATA);
             buf.write(max);
@@ -517,7 +518,7 @@ impl StreamsState {
             trace!(stream = %id, max = max, "MAX_STREAM_DATA");
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamDataFrame(MaxStreamDataFrame::new(id.into(), max, None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(frame::FrameType::MAX_STREAM_DATA);
             buf.write(id);
@@ -540,7 +541,7 @@ impl StreamsState {
             );
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamsFrame(MaxStreamsFrame::new(dir.into(), self.max_remote[dir as usize], None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(packet_num), frame);
+            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(match dir {
                 Dir::Uni => frame::FrameType::MAX_STREAMS_UNI,
@@ -560,6 +561,8 @@ impl StreamsState {
         buf: &mut Vec<u8>,
         max_buf_size: usize,
         fair: bool,
+        initial_dst_cid: ConnectionId,
+        packet_num: PacketNum,
     ) -> StreamMetaVec {
         let mut stream_frames = StreamMetaVec::new();
         while buf.len() + frame::Stream::SIZE_BOUND < max_buf_size {
@@ -615,7 +618,7 @@ impl StreamsState {
 
             let meta = frame::StreamMeta { id, offsets, fin };
             trace!(id = %meta.id, off = meta.offsets.start, len = meta.offsets.end - meta.offsets.start, fin = meta.fin, "STREAM");
-            meta.encode(encode_length, buf);
+            meta.encode(encode_length, buf, initial_dst_cid, packet_num);
 
             // The range might not be retrievable in a single `get` if it is
             // stored in noncontiguous fashion. Therefore this loop iterates
@@ -1396,7 +1399,7 @@ mod tests {
         high.write(b"high").unwrap();
 
         let mut buf = Vec::with_capacity(40);
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+        let meta = server.write_stream_frames(&mut buf, 40, true, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
         assert_eq!(meta[0].id, id_high);
         assert_eq!(meta[1].id, id_mid);
         assert_eq!(meta[2].id, id_low);
@@ -1455,7 +1458,7 @@ mod tests {
         high.set_priority(-1).unwrap();
 
         let mut buf = Vec::with_capacity(1000);
-        let meta = server.write_stream_frames(&mut buf, 40, true);
+        let meta = server.write_stream_frames(&mut buf, 40, true, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
         assert_eq!(meta.len(), 1);
         assert_eq!(meta[0].id, id_high);
 
@@ -1463,7 +1466,7 @@ mod tests {
         assert_eq!(server.pending.len(), 2);
 
         // Send the remaining data. The initial mid priority one should go first now
-        let meta = server.write_stream_frames(&mut buf, 1000, true);
+        let meta = server.write_stream_frames(&mut buf, 1000, true, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
         assert_eq!(meta.len(), 2);
         assert_eq!(meta[0].id, id_mid);
         assert_eq!(meta[1].id, id_high);
@@ -1524,7 +1527,7 @@ mod tests {
             // loop until all the streams are written
             loop {
                 let buf_len = buf.len();
-                let meta = server.write_stream_frames(&mut buf, buf_len + 40, fair);
+                let meta = server.write_stream_frames(&mut buf, buf_len + 40, fair, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
                 if meta.is_empty() {
                     break;
                 }
@@ -1595,7 +1598,7 @@ mod tests {
 
         // Write the first chunk of stream_a
         let buf_len = buf.len();
-        let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+        let meta = server.write_stream_frames(&mut buf, buf_len + 40, false, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
         assert!(!meta.is_empty());
         metas.extend(meta);
 
@@ -1612,7 +1615,7 @@ mod tests {
         // loop until all the streams are written
         loop {
             let buf_len = buf.len();
-            let meta = server.write_stream_frames(&mut buf, buf_len + 40, false);
+            let meta = server.write_stream_frames(&mut buf, buf_len + 40, false, ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6, 7]), PacketNum::Unknown);
             if meta.is_empty() {
                 break;
             }

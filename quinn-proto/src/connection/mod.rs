@@ -664,7 +664,7 @@ impl Connection {
                         builder.pad_to(segment_size as u16);
                     }
 
-                    packet_nums.push(PacketNum::Number(builder.exact_number));
+                    packet_nums.push(PacketNum::Number(builder.space.into(), builder.exact_number));
 
                     builder.finish_and_track(now, self, sent_frames.take(), buf, self.initial_dst_cid);
 
@@ -734,7 +734,7 @@ impl Connection {
                 // datagram.
                 // Finish current packet without adding extra padding
                 if let Some(builder) = builder_storage.take() {
-                    packet_nums.push(PacketNum::Number(builder.exact_number));
+                    packet_nums.push(PacketNum::Number(builder.space.into(), builder.exact_number));
 
                     builder.finish_and_track(now, self, sent_frames.take(), buf, self.initial_dst_cid);
                 }
@@ -795,7 +795,8 @@ impl Connection {
                         buf,
                         &mut self.stats,
                         self.initial_dst_cid,
-                        builder.exact_number
+                        builder.exact_number,
+                        space_id
                     );
                 }
 
@@ -811,14 +812,14 @@ impl Connection {
                     match self.state {
                         State::Closed(state::Closed { ref reason }) => {
                             if space_id == SpaceId::Data || reason.is_transport_layer() {
-                                reason.encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(pn))
+                                reason.encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn))
                             } else {
                                 frame::ConnectionClose {
                                     error_code: TransportErrorCode::APPLICATION_ERROR,
                                     frame_type: None,
                                     reason: Bytes::new(),
                                 }
-                                .encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(pn))
+                                .encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn))
                             }
                         }
                         State::Draining => frame::ConnectionClose {
@@ -826,7 +827,7 @@ impl Connection {
                             frame_type: None,
                             reason: Bytes::new(),
                         }
-                        .encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(pn)),
+                        .encode(buf, max_frame_size, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn)),
                         _ => unreachable!(
                             "tried to make a close packet when the connection wasn't closed"
                         ),
@@ -856,16 +857,17 @@ impl Connection {
                     trace!("PATH_RESPONSE {:08x} (off-path)", token);
 
                     let pn = builder.exact_number;
+                    let pns = builder.space.into();
 
                     let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathResponseFrame(PathResponseFrame::new(Some(token.to_string()), None)));
-                    QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+                    QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
 
                     buf.write(frame::FrameType::PATH_RESPONSE);
                     buf.write(token);
                     self.stats.frame_tx.path_response += 1;
                     builder.pad_to(MIN_INITIAL_SIZE);
 
-                    packet_nums.push(PacketNum::Number(builder.exact_number));
+                    packet_nums.push(PacketNum::Number(builder.space.into(), builder.exact_number));
 
                     builder.finish_and_track(
                         now,
@@ -930,7 +932,7 @@ impl Connection {
             }
             let last_packet_number = builder.exact_number;
 
-            packet_nums.push(PacketNum::Number(builder.exact_number));
+            packet_nums.push(PacketNum::Number(builder.space.into(), builder.exact_number));
 
             builder.finish_and_track(now, self, sent_frames, buf, self.initial_dst_cid);
             self.path
@@ -963,7 +965,7 @@ impl Connection {
             )?;
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PingFrame(PingFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(builder.exact_number), frame);
+            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(builder.space.into(), builder.exact_number), frame);
             
             // We implement MTU probes as ping packets padded up to the probe size
             buf.write(frame::FrameType::PING);
@@ -981,7 +983,7 @@ impl Connection {
                 ..Default::default()
             };
 
-            packet_nums.push(PacketNum::Number(builder.exact_number));
+            packet_nums.push(PacketNum::Number(builder.space.into(), builder.exact_number));
 
             builder.finish_and_track(now, self, Some(sent_frames), buf, self.initial_dst_cid);
 
@@ -1058,9 +1060,10 @@ impl Connection {
         trace!("validating previous path with PATH_CHALLENGE {:08x}", token);
 
         let pn = builder.exact_number;
+        let pns = builder.space.into();
 
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathChallengeFrame(PathChallengeFrame::new(Some(token.to_string()), None)));
-        QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+        QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
 
         buf.write(frame::FrameType::PATH_CHALLENGE);
         buf.write(token);
@@ -1072,7 +1075,7 @@ impl Connection {
         // sending a datagram of this size
         builder.pad_to(MIN_INITIAL_SIZE);
 
-        packet_nums.push(PacketNum::Number(pn));
+        packet_nums.push(PacketNum::Number(pns, pn));
 
         builder.finish(self, buf, self.initial_dst_cid);
         self.stats.udp_tx.on_sent(1, buf.len());
@@ -3121,7 +3124,7 @@ impl Connection {
         // HANDSHAKE_DONE
         if !is_0rtt && mem::replace(&mut space.pending.handshake_done, false) {
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::HandshakeDoneFrame(HandshakeDoneFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
             
             buf.write(frame::FrameType::HANDSHAKE_DONE);
             sent.retransmits.get_or_create().handshake_done = true;
@@ -3135,7 +3138,7 @@ impl Connection {
             trace!("PING");
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PingFrame(PingFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
             buf.write(frame::FrameType::PING);
             sent.non_retransmits = true;
@@ -3161,6 +3164,7 @@ impl Connection {
                 &mut self.stats,
                 self.initial_dst_cid,
                 pn,
+                space_id
             );
         }
 
@@ -3205,7 +3209,7 @@ impl Connection {
                 trace!("PATH_CHALLENGE {:08x}", token);
 
                 let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathChallengeFrame(PathChallengeFrame::new(Some(token.to_string()), None)));
-                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
                 buf.write(frame::FrameType::PATH_CHALLENGE);
                 buf.write(token);
@@ -3221,7 +3225,7 @@ impl Connection {
                 trace!("PATH_RESPONSE {:08x}", token);
 
                 let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathResponseFrame(PathResponseFrame::new(Some(token.to_string()), None)));
-                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
                 buf.write(frame::FrameType::PATH_RESPONSE);
                 buf.write(token);
@@ -3262,7 +3266,7 @@ impl Connection {
                 truncated.offset,
                 truncated.data.len()
             );
-            truncated.encode(buf, self.initial_dst_cid, PacketNum::Number(pn));
+            truncated.encode(buf, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn));
             self.stats.frame_tx.crypto += 1;
             sent.retransmits.get_or_create().crypto.push_back(truncated);
             if !frame.data.is_empty() {
@@ -3279,7 +3283,8 @@ impl Connection {
                 &mut self.stats.frame_tx,
                 max_size,
                 self.initial_dst_cid,
-                pn
+                pn,
+                space_id
             );
         }
 
@@ -3300,7 +3305,7 @@ impl Connection {
                 id: issued.id,
                 reset_token: issued.reset_token,
             }
-            .encode(buf, self.initial_dst_cid, PacketNum::Number(pn));
+            .encode(buf, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn));
             sent.retransmits.get_or_create().new_cids.push(issued);
             self.stats.frame_tx.new_connection_id += 1;
         }
@@ -3314,7 +3319,7 @@ impl Connection {
             trace!(sequence = seq, "RETIRE_CONNECTION_ID");
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::RetireConnectionIdFrame(RetireConnectionIdFrame::new(seq.try_into().unwrap(), None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pn), frame);
+            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
             buf.write(frame::FrameType::RETIRE_CONNECTION_ID);
             buf.write_var(seq);
@@ -3325,7 +3330,7 @@ impl Connection {
         // DATAGRAM
         let mut sent_datagrams = false;
         while buf.len() + Datagram::SIZE_BOUND < max_size && space_id == SpaceId::Data {
-            match self.datagrams.write(buf, max_size, self.initial_dst_cid, PacketNum::Number(pn)) {
+            match self.datagrams.write(buf, max_size, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn)) {
                 true => {
                     sent_datagrams = true;
                     sent.non_retransmits = true;
@@ -3370,7 +3375,7 @@ impl Connection {
                 break;
             }
 
-            new_token.encode(buf, self.initial_dst_cid, PacketNum::Number(pn));
+            new_token.encode(buf, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn));
             sent.retransmits
                 .get_or_create()
                 .new_tokens
@@ -3382,7 +3387,7 @@ impl Connection {
         if space_id == SpaceId::Data {
             sent.stream_frames =
                 self.streams
-                    .write_stream_frames(buf, max_size, self.config.send_fairness);
+                    .write_stream_frames(buf, max_size, self.config.send_fairness, self.initial_dst_cid, PacketNum::Number(space_id.into(), pn));
             self.stats.frame_tx.stream += sent.stream_frames.len() as u64;
         }
 
@@ -3402,6 +3407,7 @@ impl Connection {
         stats: &mut ConnectionStats,
         initial_dst_cid: ConnectionId,
         packet_num: u64,
+        space_id: SpaceId,
     ) {
         debug_assert!(!space.pending_acks.ranges().is_empty());
 
@@ -3426,7 +3432,7 @@ impl Connection {
             delay_micros
         );
 
-        frame::Ack::encode(delay as _, space.pending_acks.ranges(), ecn, buf, initial_dst_cid, PacketNum::Number(packet_num));
+        frame::Ack::encode(delay as _, space.pending_acks.ranges(), ecn, buf, initial_dst_cid, PacketNum::Number(space_id.into(), packet_num));
         stats.frame_tx.acks += 1;
     }
 

@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes};
-use qlog_rs::{quic_10::data::{AckFrame, ApplicationError, ConnectionCloseFrame, CryptoFrame, DatagramFrame, NewConnectionIdFrame, NewTokenFrame, QuicBaseFrame, QuicFrame, ResetStreamFrame, StopSendingFrame, Token}, writer::{PacketNum, QlogWriter}};
+use qlog_rs::{quic_10::data::{AckFrame, ApplicationError, ConnectionCloseFrame, CryptoFrame, DatagramFrame, NewConnectionIdFrame, NewTokenFrame, QuicBaseFrame, QuicFrame, ResetStreamFrame, StopSendingFrame, StreamFrame, Token}, writer::{PacketNum, QlogWriter}};
 use tinyvec::TinyVec;
 
 use crate::{
@@ -511,8 +511,7 @@ impl Default for StreamMeta {
 }
 
 impl StreamMeta {
-    // TODO: Maybe log something here
-    pub(crate) fn encode<W: BufMut>(&self, length: bool, out: &mut W) {
+    pub(crate) fn encode<W: BufMut>(&self, length: bool, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let mut ty = *STREAM_TYS.start();
         if self.offsets.start != 0 {
             ty |= 0x04;
@@ -532,7 +531,8 @@ impl StreamMeta {
             out.write_var(self.offsets.end - self.offsets.start); // <=8 bytes
         }
 
-        println!("STREAM META: ty = {}, id = {}, offset start = {}, offset end = {}", ty, self.id, self.offsets.start, self.offsets.end);
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamFrame(StreamFrame::new(self.id.0, self.offsets.start, self.offsets.end - self.offsets.start, Some(self.fin), None)));
+        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
     }
 }
 

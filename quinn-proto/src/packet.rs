@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, io, ops::Range, str};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use qlog_rs::quic_10::data::PacketType;
+use qlog_rs::{quic_10::data::PacketType, writer::PacketNumSpace};
 use thiserror::Error;
 
 use crate::{
@@ -940,6 +940,16 @@ impl Into<PacketType> for SpaceId {
             SpaceId::Initial => PacketType::Initial,
             SpaceId::Handshake => PacketType::Handshake,
             SpaceId::Data => PacketType::OneRtt,
+        }
+    }
+}
+
+impl Into<PacketNumSpace> for SpaceId {
+    fn into(self) -> PacketNumSpace {
+        match self {
+            SpaceId::Initial => PacketNumSpace::Initial,
+            SpaceId::Handshake => PacketNumSpace::Handshake,
+            SpaceId::Data => PacketNumSpace::Data,
         }
     }
 }
