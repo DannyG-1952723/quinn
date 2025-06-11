@@ -126,16 +126,32 @@ impl PacketBuilder {
 
         // TODO: Update values
         let token  = match header {
-            Header::Initial(ref init_header) => Some(Token::new(None, None, Some(RawInfo::new(Some(init_header.token.len() as u64), None)))),
+            Header::Initial(ref init_header) => Some(
+                Token::new(
+                    None,
+                    None,
+                    Some(
+                        RawInfo::new(
+                            Some(init_header.token.len() as u64),
+                            None
+                        )
+                    )
+                )
+            ),
             _ => None
         };
 
-        let packet_type = if header.is_0rtt() {
-            PacketType::ZeroRtt
-        } else if header.is_1rtt() {
-            PacketType::OneRtt
-        } else {
-            header.space().into()
+        let packet_type = header.packet_type();
+
+        let packet_num_length = match packet_type {
+            PacketType::Initial | PacketType::Handshake | PacketType::ZeroRtt => {
+                // These types have a packet number
+                match header.number() {
+                    Some(num) => Some(num.len() as u16),
+                    None => Some(0),
+                }
+            }
+            _ => None,
         };
 
         // TODO: Update values
@@ -146,9 +162,9 @@ impl PacketBuilder {
             Some(exact_number),
             None,
             token,
-            // TODO: Add payload length to this
-            Some((number.len() + 0).try_into().unwrap()),
-            Some(version.to_string()),
+            // Gets updated later when the packet is finished, store only packet number length first
+            packet_num_length,
+            header.version().map(|version| version.to_string()),
             None,
             None,
             header.src_cid().map(|scid| format!("{}", scid.to_string())),
@@ -158,6 +174,7 @@ impl PacketBuilder {
         // TODO: Update values
         let log_packet = PacketSent::new(
             log_header,
+            // Gets updated later when frames are added
             None,
             None,
             None,
@@ -167,7 +184,8 @@ impl PacketBuilder {
             None
         );
 
-        QlogWriter::cache_quic_packet(conn.initial_dst_cid.to_string(), PacketNum::Number(header.space().into(), number.into()), log_packet);
+        // TODO: Fix packet number (into() won't always give an accurate number)
+        QlogWriter::cache_quic_packet_sent(conn.initial_dst_cid.to_string(), PacketNum::Number(header.space().into(), number.into()), log_packet);
 
         let partial_encode = header.encode(buffer);
         if conn.peer_params.grease_quic_bit && conn.rng.random() {
@@ -238,7 +256,13 @@ impl PacketBuilder {
         let ack_eliciting = self.ack_eliciting;
         let exact_number = self.exact_number;
         let space_id = self.space;
+        let header_len = self.partial_encode.header_len;
         let (size, padded) = self.finish(conn, buffer, initial_dst_cid);
+
+        let payload_length = size - header_len;
+
+        QlogWriter::update_packet_length(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), exact_number), payload_length.try_into().unwrap());
+
         let sent = match sent {
             Some(sent) => sent,
             None => return,
@@ -282,7 +306,7 @@ impl PacketBuilder {
             trace!("PADDING * {}", self.min_size - buffer.len());
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PaddingFrame(PaddingFrame::new(Some(RawInfo::new(Some((self.min_size - buffer.len()).try_into().unwrap()), None)))));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(self.space.into(), self.exact_number), frame);
+            QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), PacketNum::Number(self.space.into(), self.exact_number), frame);
 
             buffer.resize(self.min_size, 0);
         }

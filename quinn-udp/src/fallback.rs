@@ -119,7 +119,7 @@ impl UdpSocketState {
 }
 
 fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
-    QlogWriter::log_quic_packets(cid, packet_nums);
+    QlogWriter::log_quic_packets_sent(cid, packet_nums);
 
     socket.0.send_to(
         transmit.contents,

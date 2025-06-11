@@ -1,9 +1,13 @@
+use qlog_rs::events::RawInfo;
+use qlog_rs::quic_10::data::{PacketHeader, PacketType, Token};
+use qlog_rs::quic_10::events::PacketReceived;
+use qlog_rs::writer::QlogWriter;
 use tracing::{debug, trace};
 
-use crate::Instant;
+use crate::{ConnectionId, Instant};
 use crate::connection::spaces::PacketSpace;
 use crate::crypto::{HeaderKey, KeyPair, PacketKey};
-use crate::packet::{Packet, PartialDecode, SpaceId};
+use crate::packet::{Header, Packet, PartialDecode, SpaceId};
 use crate::token::ResetToken;
 use crate::{RESET_TOKEN_SIZE, TransportError};
 
@@ -13,6 +17,7 @@ pub(super) fn unprotect_header(
     spaces: &[PacketSpace; 3],
     zero_rtt_crypto: Option<&ZeroRttCrypto>,
     stateless_reset_token: Option<ResetToken>,
+    initial_dst_cid: ConnectionId,
 ) -> Option<UnprotectHeaderResult> {
     let header_crypto = if partial_decode.is_0rtt() {
         if let Some(crypto) = zero_rtt_crypto {
@@ -42,10 +47,73 @@ pub(super) fn unprotect_header(
         && stateless_reset_token.as_deref() == Some(&packet[packet.len() - RESET_TOKEN_SIZE..]);
 
     match partial_decode.finish(header_crypto) {
-        Ok(packet) => Some(UnprotectHeaderResult {
-            packet: Some(packet),
-            stateless_reset,
-        }),
+        Ok(packet) => {
+            // TODO: Update values
+            let token  = match packet.header {
+                Header::Initial(ref init_header) => Some(
+                    Token::new(
+                        None,
+                        None,
+                        Some(
+                            RawInfo::new(
+                                Some(init_header.token.len() as u64),
+                                None
+                            )
+                        )
+                    )
+                ),
+                _ => None
+            };
+
+            let packet_type = packet.header.packet_type();
+
+            let length = match packet_type {
+                PacketType::Initial | PacketType::Handshake | PacketType::ZeroRtt => {
+                    // These types have a packet number
+                    let packet_num_length = packet.header.number().unwrap().len() as u16;
+                    let payload_length = packet.payload.len() as u16;
+
+                    Some(packet_num_length + payload_length)
+                }
+                _ => None,
+            };
+
+            // TODO: Update values
+            let header = PacketHeader::new(
+                None,
+                packet_type,
+                None,
+                // TODO: Fix packet number (into() won't always give an accurate number)
+                packet.header.number().map_or_else(|| None, |number| Some(number.into())),
+                None,
+                token,
+                length,
+                packet.header.version().map_or_else(|| None, |version| Some(version.to_string())),
+                None,
+                None,
+                packet.header.src_cid().map(|scid| format!("{}", scid.to_string())),
+                Some(format!("{}", packet.header.dst_cid().to_string()))
+            );
+
+            // TODO: Update values
+            let packet_received = PacketReceived::new(
+                header,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None
+            );
+
+            QlogWriter::cache_quic_packet_received(initial_dst_cid.to_string(), packet.header.log_number(), packet_received);
+
+            Some(UnprotectHeaderResult {
+                packet: Some(packet),
+                stateless_reset,
+            })
+        },
+        // TODO: Log packet_received of Stateless Reset
         Err(_) if stateless_reset => Some(UnprotectHeaderResult {
             packet: None,
             stateless_reset: true,

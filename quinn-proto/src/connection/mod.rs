@@ -860,7 +860,7 @@ impl Connection {
                     let pns = builder.space.into();
 
                     let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathResponseFrame(PathResponseFrame::new(Some(token.to_string()), None)));
-                    QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
+                    QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
 
                     buf.write(frame::FrameType::PATH_RESPONSE);
                     buf.write(token);
@@ -880,8 +880,6 @@ impl Connection {
                         self.initial_dst_cid
                     );
                     self.stats.udp_tx.on_sent(1, buf.len());
-
-                    println!("Packet numbers to be sent: {:?}", packet_nums);
 
                     return Some(Transmit {
                         destination: remote,
@@ -965,7 +963,7 @@ impl Connection {
             )?;
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PingFrame(PingFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(builder.space.into(), builder.exact_number), frame);
+            QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(builder.space.into(), builder.exact_number), frame);
             
             // We implement MTU probes as ping packets padded up to the probe size
             buf.write(frame::FrameType::PING);
@@ -1001,9 +999,6 @@ impl Connection {
         self.path.total_sent = self.path.total_sent.saturating_add(buf.len() as u64);
 
         self.stats.udp_tx.on_sent(num_datagrams as u64, buf.len());
-
-        // TODO: Remove this
-        println!("Packet numbers to be sent: {:?}", packet_nums);
 
         Some(Transmit {
             destination: self.path.remote,
@@ -1063,7 +1058,7 @@ impl Connection {
         let pns = builder.space.into();
 
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathChallengeFrame(PathChallengeFrame::new(Some(token.to_string()), None)));
-        QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
+        QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(pns, pn), frame);
 
         buf.write(frame::FrameType::PATH_CHALLENGE);
         buf.write(token);
@@ -1966,7 +1961,6 @@ impl Connection {
     ///
     /// Decrypting the first packet in the `Endpoint` allows stateless packet handling to be more
     /// efficient.
-    // TODO: Check this function (might be interesting for logs)
     pub(crate) fn handle_first_packet(
         &mut self,
         now: Instant,
@@ -2215,12 +2209,12 @@ impl Connection {
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             self.peer_params.stateless_reset_token,
+            self.initial_dst_cid
         ) {
             self.handle_packet(now, remote, ecn, decoded.packet, decoded.stateless_reset);
         }
     }
 
-    // TODO: Check this function (might be interesting for logs)
     fn handle_packet(
         &mut self,
         now: Instant,
@@ -2373,7 +2367,6 @@ impl Connection {
         }
     }
 
-    // TODO: Check this function (might be interesting for logs)
     fn process_decrypted_packet(
         &mut self,
         now: Instant,
@@ -2393,7 +2386,7 @@ impl Connection {
                 return Ok(());
             }
             State::Closed(_) => {
-                for result in frame::Iter::new(packet.payload.freeze())? {
+                for result in frame::Iter::new(packet.payload.freeze(), self.initial_dst_cid, packet.header.log_number())? {
                     let frame = match result {
                         Ok(frame) => frame,
                         Err(err) => {
@@ -2414,6 +2407,9 @@ impl Connection {
                         break;
                     }
                 }
+
+                QlogWriter::log_quic_packets_received(self.initial_dst_cid.to_string(), packet.header.log_number());
+
                 return Ok(());
             }
             State::Draining | State::Drained => return Ok(()),
@@ -2637,7 +2633,6 @@ impl Connection {
     }
 
     /// Process an Initial or Handshake packet payload
-    // TODO: Check this function (might be interesting for logs)
     fn process_early_payload(
         &mut self,
         now: Instant,
@@ -2646,7 +2641,7 @@ impl Connection {
         debug_assert_ne!(packet.header.space(), SpaceId::Data);
         let payload_len = packet.payload.len();
         let mut ack_eliciting = false;
-        for result in frame::Iter::new(packet.payload.freeze())? {
+        for result in frame::Iter::new(packet.payload.freeze(), self.initial_dst_cid, packet.header.log_number())? {
             let frame = result?;
             let span = match frame {
                 Frame::Padding => continue,
@@ -2670,16 +2665,24 @@ impl Connection {
                 Frame::Close(reason) => {
                     self.error = Some(reason.into());
                     self.state = State::Draining;
+
+                    QlogWriter::log_quic_packets_received(self.initial_dst_cid.to_string(), packet.header.log_number());
+
                     return Ok(());
                 }
                 _ => {
                     let mut err =
                         TransportError::PROTOCOL_VIOLATION("illegal frame type in handshake");
                     err.frame = Some(frame.ty());
+
+                    QlogWriter::log_quic_packets_received(self.initial_dst_cid.to_string(), packet.header.log_number());
+
                     return Err(err);
                 }
             }
         }
+
+        QlogWriter::log_quic_packets_received(self.initial_dst_cid.to_string(), packet.header.log_number());
 
         if ack_eliciting {
             // In the initial and handshake spaces, ACKs must be sent immediately
@@ -2692,7 +2695,6 @@ impl Connection {
         Ok(())
     }
 
-    // TODO: Check this function (might be interesting for logs)
     fn process_payload(
         &mut self,
         now: Instant,
@@ -2705,7 +2707,7 @@ impl Connection {
         let mut close = None;
         let payload_len = payload.len();
         let mut ack_eliciting = false;
-        for result in frame::Iter::new(payload)? {
+        for result in frame::Iter::new(payload, self.initial_dst_cid, PacketNum::Number(packet.header.space().into(), number))? {
             let frame = result?;
             let span = match frame {
                 Frame::Padding => continue,
@@ -2984,6 +2986,11 @@ impl Connection {
             }
         }
 
+        QlogWriter::log_quic_packets_received(
+            self.initial_dst_cid.to_string(),
+            PacketNum::Number(packet.header.space().into(), number)
+        );
+
         let space = &mut self.spaces[SpaceId::Data];
         if space
             .pending_acks
@@ -3107,7 +3114,6 @@ impl Connection {
             .push_back(EndpointEventInner::NeedIdentifiers(now, n));
     }
 
-    // TODO: Check this function (might be interesting for logs)
     fn populate_packet(
         &mut self,
         now: Instant,
@@ -3124,7 +3130,7 @@ impl Connection {
         // HANDSHAKE_DONE
         if !is_0rtt && mem::replace(&mut space.pending.handshake_done, false) {
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::HandshakeDoneFrame(HandshakeDoneFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
+            QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
             
             buf.write(frame::FrameType::HANDSHAKE_DONE);
             sent.retransmits.get_or_create().handshake_done = true;
@@ -3138,7 +3144,7 @@ impl Connection {
             trace!("PING");
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PingFrame(PingFrame::new(None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
+            QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
             buf.write(frame::FrameType::PING);
             sent.non_retransmits = true;
@@ -3209,7 +3215,7 @@ impl Connection {
                 trace!("PATH_CHALLENGE {:08x}", token);
 
                 let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathChallengeFrame(PathChallengeFrame::new(Some(token.to_string()), None)));
-                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
+                QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
                 buf.write(frame::FrameType::PATH_CHALLENGE);
                 buf.write(token);
@@ -3225,7 +3231,7 @@ impl Connection {
                 trace!("PATH_RESPONSE {:08x}", token);
 
                 let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathResponseFrame(PathResponseFrame::new(Some(token.to_string()), None)));
-                QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
+                QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
                 buf.write(frame::FrameType::PATH_RESPONSE);
                 buf.write(token);
@@ -3319,7 +3325,7 @@ impl Connection {
             trace!(sequence = seq, "RETIRE_CONNECTION_ID");
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::RetireConnectionIdFrame(RetireConnectionIdFrame::new(seq.try_into().unwrap(), None)));
-            QlogWriter::quic_packet_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
+            QlogWriter::quic_packet_sent_add_frame(self.initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), pn), frame);
 
             buf.write(frame::FrameType::RETIRE_CONNECTION_ID);
             buf.write_var(seq);
@@ -3485,7 +3491,6 @@ impl Connection {
         );
     }
 
-    // TODO: Check this function (might be interesting for logs)
     fn decrypt_packet(
         &mut self,
         now: Instant,
@@ -3584,6 +3589,7 @@ impl Connection {
             &self.spaces,
             self.zero_rtt_crypto.as_ref(),
             self.peer_params.stateless_reset_token,
+            self.initial_dst_cid
         )?;
 
         let mut packet = decrypted_header.packet?;

@@ -409,7 +409,6 @@ impl StreamsState {
             .is_some_and(|s| s.can_send_flow_control())
     }
 
-    // TODO: Check this function
     pub(in crate::connection) fn write_control_frames(
         &mut self,
         buf: &mut Vec<u8>,
@@ -484,7 +483,7 @@ impl StreamsState {
             retransmits.get_or_create().max_data = true;
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxDataFrame(MaxDataFrame::new(max.into_inner(), None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
+            QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(frame::FrameType::MAX_DATA);
             buf.write(max);
@@ -517,8 +516,8 @@ impl StreamsState {
 
             trace!(stream = %id, max = max, "MAX_STREAM_DATA");
 
-            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamDataFrame(MaxStreamDataFrame::new(id.into(), max, None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
+            let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamDataFrame(MaxStreamDataFrame::new(id.0, max, None)));
+            QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(frame::FrameType::MAX_STREAM_DATA);
             buf.write(id);
@@ -541,7 +540,7 @@ impl StreamsState {
             );
 
             let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamsFrame(MaxStreamsFrame::new(dir.into(), self.max_remote[dir as usize], None)));
-            QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
+            QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), PacketNum::Number(space_id.into(), packet_num), frame);
 
             buf.write(match dir {
                 Dir::Uni => frame::FrameType::MAX_STREAMS_UNI,
@@ -555,7 +554,6 @@ impl StreamsState {
         }
     }
 
-    // TODO: Check this function
     pub(crate) fn write_stream_frames(
         &mut self,
         buf: &mut Vec<u8>,

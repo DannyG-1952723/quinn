@@ -5,7 +5,7 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes};
-use qlog_rs::{quic_10::data::{AckFrame, ApplicationError, ConnectionCloseFrame, CryptoFrame, DatagramFrame, NewConnectionIdFrame, NewTokenFrame, QuicBaseFrame, QuicFrame, ResetStreamFrame, StopSendingFrame, StreamFrame, Token}, writer::{PacketNum, QlogWriter}};
+use qlog_rs::{events::RawInfo, quic_10::data::{AckFrame, ApplicationError, ConnectionCloseFrame, CryptoFrame, DataBlockedFrame, DatagramFrame, HandshakeDoneFrame, MaxDataFrame, MaxStreamDataFrame, MaxStreamsFrame, NewConnectionIdFrame, NewTokenFrame, PaddingFrame, PathChallengeFrame, PathResponseFrame, PingFrame, QuicBaseFrame, QuicFrame, ResetStreamFrame, RetireConnectionIdFrame, StopSendingFrame, StreamDataBlockedFrame, StreamFrame, StreamsBlockedFrame, Token}, writer::{PacketNum, QlogWriter}};
 use tinyvec::TinyVec;
 
 use crate::{
@@ -288,7 +288,7 @@ impl FrameStruct for ConnectionClose {
 impl ConnectionClose {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, max_len: usize, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ConnectionCloseFrame(ConnectionCloseFrame::new(None, None, Some(self.error_code.into()), Some(String::from_utf8_lossy(&self.reason).to_string()), None, None, None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::CONNECTION_CLOSE); // 1 byte
         out.write(self.error_code); // <= 8 bytes
@@ -434,7 +434,7 @@ impl Ack {
 
         // TODO: Update values
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::AckFrame(AckFrame::new(Some(delay as f32), Some(acked_ranges), None, None, None, None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
     }
 
     pub fn iter(&self) -> AckIter<'_> {
@@ -532,7 +532,7 @@ impl StreamMeta {
         }
 
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamFrame(StreamFrame::new(self.id.0, self.offsets.start, self.offsets.end - self.offsets.start, Some(self.fin), None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
     }
 }
 
@@ -550,7 +550,7 @@ impl Crypto {
 
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::CryptoFrame(CryptoFrame::new(self.offset, self.data.len() as u64, None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::CRYPTO);
         out.write_var(self.offset);
@@ -568,7 +568,7 @@ impl NewToken {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let token = Token::new(None, None, None);
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewTokenFrame(NewTokenFrame::new(token, None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::NEW_TOKEN);
         out.write_var(self.token.len() as u64);
@@ -583,10 +583,13 @@ impl NewToken {
 pub(crate) struct Iter {
     bytes: Bytes,
     last_ty: Option<FrameType>,
+    connection_id: String,
+    packet_num: PacketNum,
+    cons_padding_count: u64,
 }
 
 impl Iter {
-    pub(crate) fn new(payload: Bytes) -> Result<Self, TransportError> {
+    pub(crate) fn new(payload: Bytes, initial_dst_cid: ConnectionId, packet_num: PacketNum) -> Result<Self, TransportError> {
         if payload.is_empty() {
             // "An endpoint MUST treat receipt of a packet containing no frames as a
             // connection error of type PROTOCOL_VIOLATION."
@@ -599,6 +602,9 @@ impl Iter {
         Ok(Self {
             bytes: payload,
             last_ty: None,
+            connection_id: initial_dst_cid.to_string(),
+            packet_num,
+            cons_padding_count: 0
         })
     }
 
@@ -610,71 +616,234 @@ impl Iter {
         Ok(self.bytes.split_to(len as usize))
     }
 
-    // TODO: Check this function (DECODING FRAMES FROM BUFFER)
     fn try_next(&mut self) -> Result<Frame, IterErr> {
         let ty = self.bytes.get::<FrameType>()?;
         self.last_ty = Some(ty);
+
+        match ty {
+            FrameType::PADDING => self.cons_padding_count += 1,
+            _ => {
+                if self.cons_padding_count > 0 {
+                    let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PaddingFrame(PaddingFrame::new(
+                        Some(RawInfo::new(Some(self.cons_padding_count), None))
+                    )));
+                    QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, frame);
+
+                    self.cons_padding_count = 0;
+                }
+            }
+        }
+
         Ok(match ty {
             FrameType::PADDING => Frame::Padding,
-            FrameType::RESET_STREAM => Frame::ResetStream(ResetStream {
-                id: self.bytes.get()?,
-                error_code: self.bytes.get()?,
-                final_offset: self.bytes.get()?,
-            }),
-            FrameType::CONNECTION_CLOSE => Frame::Close(Close::Connection(ConnectionClose {
-                error_code: self.bytes.get()?,
-                frame_type: {
-                    let x = self.bytes.get_var()?;
-                    if x == 0 { None } else { Some(FrameType(x)) }
-                },
-                reason: self.take_len()?,
-            })),
+            FrameType::RESET_STREAM => {
+                let frame = ResetStream {
+                    id: self.bytes.get()?,
+                    error_code: self.bytes.get()?,
+                    final_offset: self.bytes.get()?,
+                };
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ResetStreamFrame(ResetStreamFrame::new(
+                    frame.id.0,
+                    ApplicationError::Unknown,
+                    Some(frame.error_code.0),
+                    frame.final_offset.0,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::ResetStream(frame)
+            },
+            FrameType::CONNECTION_CLOSE => {
+                let frame = ConnectionClose {
+                    error_code: self.bytes.get()?,
+                    frame_type: {
+                        let x = self.bytes.get_var()?;
+                        if x == 0 { None } else { Some(FrameType(x)) }
+                    },
+                    reason: self.take_len()?,
+                };
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ConnectionCloseFrame(ConnectionCloseFrame::new(
+                    None,
+                    None,
+                    Some(frame.error_code.into()),
+                    Some(String::from_utf8_lossy(&frame.reason).to_string()),
+                    None,
+                    None,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::Close(Close::Connection(frame))
+            },
             FrameType::APPLICATION_CLOSE => Frame::Close(Close::Application(ApplicationClose {
                 error_code: self.bytes.get()?,
                 reason: self.take_len()?,
             })),
-            FrameType::MAX_DATA => Frame::MaxData(self.bytes.get()?),
-            FrameType::MAX_STREAM_DATA => Frame::MaxStreamData {
-                id: self.bytes.get()?,
-                offset: self.bytes.get_var()?,
+            FrameType::MAX_DATA => {
+                let max: VarInt = self.bytes.get()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxDataFrame(MaxDataFrame::new(
+                    max.0,
+                    None,
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::MaxData(max)
             },
-            FrameType::MAX_STREAMS_BIDI => Frame::MaxStreams {
-                dir: Dir::Bi,
-                count: self.bytes.get_var()?,
+            FrameType::MAX_STREAM_DATA => {
+                let id: StreamId = self.bytes.get()?;
+                let offset: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamDataFrame(MaxStreamDataFrame::new(
+                    id.0,
+                    offset,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::MaxStreamData {
+                    id,
+                    offset,
+                }
             },
-            FrameType::MAX_STREAMS_UNI => Frame::MaxStreams {
-                dir: Dir::Uni,
-                count: self.bytes.get_var()?,
+            FrameType::MAX_STREAMS_BIDI => {
+                let dir = Dir::Bi;
+                let count: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamsFrame(MaxStreamsFrame::new(
+                    dir.into(),
+                    count,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::MaxStreams {
+                    dir,
+                    count,
+                }
             },
-            FrameType::PING => Frame::Ping,
-            FrameType::DATA_BLOCKED => Frame::DataBlocked {
-                offset: self.bytes.get_var()?,
+            FrameType::MAX_STREAMS_UNI => {
+                let dir = Dir::Uni;
+                let count: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::MaxStreamsFrame(MaxStreamsFrame::new(
+                    dir.into(),
+                    count,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::MaxStreams {
+                    dir,
+                    count,
+                }
             },
-            FrameType::STREAM_DATA_BLOCKED => Frame::StreamDataBlocked {
-                id: self.bytes.get()?,
-                offset: self.bytes.get_var()?,
+            FrameType::PING => {
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PingFrame(PingFrame::new(
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::Ping
             },
-            FrameType::STREAMS_BLOCKED_BIDI => Frame::StreamsBlocked {
-                dir: Dir::Bi,
-                limit: self.bytes.get_var()?,
+            FrameType::DATA_BLOCKED => {
+                let offset: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::DataBlockedFrame(DataBlockedFrame::new(
+                    offset,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::DataBlocked {
+                    offset,
+                }
             },
-            FrameType::STREAMS_BLOCKED_UNI => Frame::StreamsBlocked {
-                dir: Dir::Uni,
-                limit: self.bytes.get_var()?,
+            FrameType::STREAM_DATA_BLOCKED => {
+                let id: StreamId = self.bytes.get()?;
+                let offset: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamDataBlockedFrame(StreamDataBlockedFrame::new(
+                    id.0,
+                    offset,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::StreamDataBlocked {
+                    id,
+                    offset,
+                }
             },
-            FrameType::STOP_SENDING => Frame::StopSending(StopSending {
-                id: self.bytes.get()?,
-                error_code: self.bytes.get()?,
-            }),
-            FrameType::RETIRE_CONNECTION_ID => Frame::RetireConnectionId {
-                sequence: self.bytes.get_var()?,
+            FrameType::STREAMS_BLOCKED_BIDI => {
+                let dir = Dir::Bi;
+                let limit: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamsBlockedFrame(StreamsBlockedFrame::new(
+                    dir.into(),
+                    limit,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::StreamsBlocked {
+                    dir,
+                    limit,
+                }
+            },
+            FrameType::STREAMS_BLOCKED_UNI => {
+                let dir = Dir::Uni;
+                let limit: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamsBlockedFrame(StreamsBlockedFrame::new(
+                    dir.into(),
+                    limit,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::StreamsBlocked {
+                    dir,
+                    limit,
+                }
+            },
+            FrameType::STOP_SENDING => {
+                let frame = StopSending {
+                    id: self.bytes.get()?,
+                    error_code: self.bytes.get()?,
+                };
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StopSendingFrame(StopSendingFrame::new(
+                    frame.id.0,
+                    ApplicationError::Unknown,
+                    Some(frame.error_code.0),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::StopSending(frame)
+            },
+            FrameType::RETIRE_CONNECTION_ID => {
+                let sequence: u64 = self.bytes.get_var()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::RetireConnectionIdFrame(RetireConnectionIdFrame::new(
+                    sequence.try_into().unwrap(),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::RetireConnectionId {
+                    sequence,
+                }
             },
             FrameType::ACK | FrameType::ACK_ECN => {
                 let largest = self.bytes.get_var()?;
                 let delay = self.bytes.get_var()?;
                 let extra_blocks = self.bytes.get_var()? as usize;
                 let n = scan_ack_blocks(&self.bytes, largest, extra_blocks)?;
-                Frame::Ack(Ack {
+                let frame = Ack {
                     delay,
                     largest,
                     additional: self.bytes.split_to(n),
@@ -687,10 +856,56 @@ impl Iter {
                             ce: self.bytes.get_var()?,
                         })
                     },
-                })
+                };
+
+                let mut acked_ranges: Vec<Vec<u64>> = Vec::default();
+                
+                for range in frame.iter() {
+                    let start = *range.start();
+                    let end = *range.end();
+
+                    if start == end {
+                        acked_ranges.push(vec![start]);
+                    }
+                    else {
+                        acked_ranges.push(vec![start, end]);
+                    }
+                }
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::AckFrame(AckFrame::new(
+                    Some(delay as f32),
+                    Some(acked_ranges),
+                    None,
+                    None,
+                    None,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::Ack(frame)
             }
-            FrameType::PATH_CHALLENGE => Frame::PathChallenge(self.bytes.get()?),
-            FrameType::PATH_RESPONSE => Frame::PathResponse(self.bytes.get()?),
+            FrameType::PATH_CHALLENGE => {
+                let token: u64 = self.bytes.get()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathChallengeFrame(PathChallengeFrame::new(
+                    Some(token.to_string()),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::PathChallenge(token)
+            },
+            FrameType::PATH_RESPONSE => {
+                let token: u64 = self.bytes.get()?;
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PathResponseFrame(PathResponseFrame::new(
+                    Some(token.to_string()),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::PathResponse(token)
+            },
             FrameType::NEW_CONNECTION_ID => {
                 let sequence = self.bytes.get_var()?;
                 let retire_prior_to = self.bytes.get_var()?;
@@ -712,21 +927,65 @@ impl Iter {
                 }
                 let mut reset_token = [0; RESET_TOKEN_SIZE];
                 self.bytes.copy_to_slice(&mut reset_token);
-                Frame::NewConnectionId(NewConnectionId {
+
+                let reset_token: ResetToken = reset_token.into();
+
+                let frame = NewConnectionId {
                     sequence,
                     retire_prior_to,
                     id,
-                    reset_token: reset_token.into(),
-                })
+                    reset_token,
+                };
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewConnectionIdFrame(NewConnectionIdFrame::new(
+                    sequence.try_into().unwrap(),
+                    retire_prior_to.try_into().unwrap(),
+                    Some(length.try_into().unwrap()),
+                    id.to_string(),
+                    Some(reset_token.to_string()),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::NewConnectionId(frame)
             }
-            FrameType::CRYPTO => Frame::Crypto(Crypto {
-                offset: self.bytes.get_var()?,
-                data: self.take_len()?,
-            }),
-            FrameType::NEW_TOKEN => Frame::NewToken(NewToken {
-                token: self.take_len()?,
-            }),
-            FrameType::HANDSHAKE_DONE => Frame::HandshakeDone,
+            FrameType::CRYPTO => {
+                let frame = Crypto {
+                    offset: self.bytes.get_var()?,
+                    data: self.take_len()?,
+                };
+
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::CryptoFrame(CryptoFrame::new(
+                    frame.offset,
+                    frame.data.len().try_into().unwrap(),
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::Crypto(frame)
+            },
+            FrameType::NEW_TOKEN => {
+                let frame = NewToken {
+                    token: self.take_len()?,
+                };
+
+                let token = Token::new(None, None, None);
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewTokenFrame(NewTokenFrame::new(
+                    token,
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::NewToken(frame)
+            },
+            FrameType::HANDSHAKE_DONE => {
+                let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::HandshakeDoneFrame(HandshakeDoneFrame::new(
+                    None
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                Frame::HandshakeDone
+            },
             FrameType::ACK_FREQUENCY => Frame::AckFrequency(AckFrequency {
                 sequence: self.bytes.get()?,
                 ack_eliciting_threshold: self.bytes.get()?,
@@ -736,7 +995,7 @@ impl Iter {
             FrameType::IMMEDIATE_ACK => Frame::ImmediateAck,
             _ => {
                 if let Some(s) = ty.stream() {
-                    Frame::Stream(Stream {
+                    let frame = Stream {
                         id: self.bytes.get()?,
                         offset: if s.off() { self.bytes.get_var()? } else { 0 },
                         fin: s.fin(),
@@ -745,15 +1004,34 @@ impl Iter {
                         } else {
                             self.take_remaining()
                         },
-                    })
+                    };
+
+                    let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StreamFrame(StreamFrame::new(
+                        frame.id.0,
+                        frame.offset,
+                        frame.data.len().try_into().unwrap(),
+                        Some(frame.fin),
+                        None
+                    )));
+                    QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                    Frame::Stream(frame)
                 } else if let Some(d) = ty.datagram() {
-                    Frame::Datagram(Datagram {
+                    let frame = Datagram {
                         data: if d.len() {
                             self.take_len()?
                         } else {
                             self.take_remaining()
                         },
-                    })
+                    };
+
+                    let log_frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::DatagramFrame(DatagramFrame::new(
+                        Some(frame.data.len().try_into().unwrap()),
+                        None
+                    )));
+                    QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, log_frame);
+
+                    Frame::Datagram(frame)
                 } else {
                     return Err(IterErr::InvalidFrameId);
                 }
@@ -770,6 +1048,13 @@ impl Iterator for Iter {
     type Item = Result<Frame, InvalidFrame>;
     fn next(&mut self) -> Option<Self::Item> {
         if !self.bytes.has_remaining() {
+            if self.cons_padding_count > 0 {
+                let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::PaddingFrame(PaddingFrame::new(
+                    Some(RawInfo::new(Some(self.cons_padding_count), None))
+                )));
+                QlogWriter::quic_packet_received_add_frame(self.connection_id.clone(), self.packet_num, frame);
+            }
+
             return None;
         }
         match self.try_next() {
@@ -880,7 +1165,7 @@ impl FrameStruct for ResetStream {
 impl ResetStream {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::ResetStreamFrame(ResetStreamFrame::new(self.id.0, ApplicationError::Unknown, Some(self.error_code.into()), self.final_offset.into(), None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::RESET_STREAM); // 1 byte
         out.write(self.id); // <= 8 bytes
@@ -901,8 +1186,8 @@ impl FrameStruct for StopSending {
 
 impl StopSending {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
-        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StopSendingFrame(StopSendingFrame::new(self.id.0, ApplicationError::Unknown, Some(self.error_code.into()), None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::StopSendingFrame(StopSendingFrame::new(self.id.0, ApplicationError::Unknown, Some(self.error_code.0), None)));
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::STOP_SENDING); // 1 byte
         out.write(self.id); // <= 8 bytes
@@ -921,7 +1206,7 @@ pub(crate) struct NewConnectionId {
 impl NewConnectionId {
     pub(crate) fn encode<W: BufMut>(&self, out: &mut W, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::NewConnectionIdFrame(NewConnectionIdFrame::new(self.sequence.try_into().unwrap(), self.retire_prior_to.try_into().unwrap(), Some(self.id.len() as u8), self.id.to_string(), Some(self.reset_token.to_string()), None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType::NEW_CONNECTION_ID);
         out.write_var(self.sequence);
@@ -947,11 +1232,10 @@ impl FrameStruct for Datagram {
 }
 
 impl Datagram {
-    // TODO: Check this function (might be interesting for logs, write frame)
     pub(crate) fn encode(&self, length: bool, out: &mut Vec<u8>, initial_dst_cid: ConnectionId, packet_num: PacketNum) {
         // TODO: Check if this is right
         let frame = QuicFrame::QuicBaseFrame(QuicBaseFrame::DatagramFrame(DatagramFrame::new(Some(self.data.len().try_into().unwrap()), None)));
-        QlogWriter::quic_packet_add_frame(initial_dst_cid.to_string(), packet_num, frame);
+        QlogWriter::quic_packet_sent_add_frame(initial_dst_cid.to_string(), packet_num, frame);
 
         out.write(FrameType(*DATAGRAM_TYS.start() | u64::from(length))); // 1 byte
         if length {
@@ -996,7 +1280,7 @@ mod test {
     use assert_matches::assert_matches;
 
     fn frames(buf: Vec<u8>) -> Vec<Frame> {
-        Iter::new(Bytes::from(buf))
+        Iter::new(Bytes::from(buf), ConnectionId::new(&[0, 1, 2, 3, 4, 5, 6 , 7]), PacketNum::Unknown)
             .unwrap()
             .collect::<Result<Vec<_>, _>>()
             .unwrap()

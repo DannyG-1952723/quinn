@@ -1,7 +1,7 @@
 use std::{cmp::Ordering, io, ops::Range, str};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use qlog_rs::{quic_10::data::PacketType, writer::PacketNumSpace};
+use qlog_rs::{quic_10::data::PacketType, writer::{PacketNum, PacketNumSpace}};
 use thiserror::Error;
 
 use crate::{
@@ -472,6 +472,41 @@ impl Header {
             VersionNegotiate { .. } => false,
         }
     }
+
+    // TODO: Fix packet number (into() won't always give an accurate number)
+    pub(crate) fn log_number(&self) -> PacketNum {
+        use Header::*;
+
+        match *self {
+            Initial(InitialHeader { number, .. }) => PacketNum::Number(self.space().into(), number.into()),
+            Long { number, .. } => PacketNum::Number(self.space().into(), number.into()),
+            Short { number, .. } => PacketNum::Number(self.space().into(), number.into()),
+            Retry { .. } => PacketNum::Retry,
+            VersionNegotiate { .. } => PacketNum::VersionNegotiation,
+        }
+    }
+
+    pub(crate) fn packet_type(&self) -> PacketType {
+        if self.is_0rtt() {
+            PacketType::ZeroRtt
+        } else if self.is_1rtt() {
+            PacketType::OneRtt
+        } else {
+            self.space().into()
+        }
+    }
+
+    pub(crate) fn version(&self) -> Option<u32> {
+        use Header::*;
+
+        match self {
+            Initial(initial_header) => Some(initial_header.version),
+            Long { version, .. } => Some(*version),
+            Retry { version, .. } => Some(*version),
+            Short { .. } => None,
+            VersionNegotiate { .. } => None,
+        }
+    }
 }
 
 pub(crate) struct PartialEncode {
@@ -690,6 +725,17 @@ pub(crate) struct InitialHeader {
     pub(crate) token: Bytes,
     pub(crate) number: PacketNumber,
     pub(crate) version: u32,
+}
+
+impl InitialHeader {
+    pub(crate) fn packet_type(&self) -> PacketType {
+        PacketType::Initial
+    }
+
+    // TODO: Fix packet number (into() won't always give an accurate number)
+    pub(crate) fn log_number(&self) -> PacketNum {
+        PacketNum::Number(PacketNumSpace::Initial, self.number.into())
+    }
 }
 
 // An encoded packet number

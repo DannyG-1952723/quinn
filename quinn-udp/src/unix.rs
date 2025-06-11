@@ -307,7 +307,7 @@ fn send(
     cid: String,
     packet_nums: Vec<PacketNum>,
 ) -> io::Result<()> {
-    QlogWriter::log_quic_packets(cid, packet_nums);
+    QlogWriter::log_quic_packets_sent(cid, packet_nums);
 
     #[allow(unused_mut)] // only mutable on FreeBSD
     let mut encode_src_ip = true;

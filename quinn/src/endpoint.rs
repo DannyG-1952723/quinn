@@ -202,7 +202,6 @@ impl Endpoint {
     /// See [`connect()`] for details.
     ///
     /// [`connect()`]: Endpoint::connect
-    // TODO: Maybe add connection_started log here
     pub fn connect_with(
         &self,
         config: ClientConfig,
@@ -660,7 +659,6 @@ pin_project! {
 
 impl Future for Accept<'_> {
     type Output = Option<Incoming>;
-    // TODO: Maybe add log here
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
         let mut endpoint = this.endpoint.inner.state.lock().unwrap();

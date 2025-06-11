@@ -324,7 +324,7 @@ impl UdpSocketState {
 }
 
 fn send(socket: UdpSockRef<'_>, transmit: &Transmit<'_>, cid: String, packet_nums: Vec<PacketNum>) -> io::Result<()> {
-    QlogWriter::log_quic_packets(cid, packet_nums);
+    QlogWriter::log_quic_packets_sent(cid, packet_nums);
 
     // we cannot use [`socket2::sendmsg()`] and [`socket2::MsgHdr`] as we do not have access
     // to the inner field which holds the WSAMSG

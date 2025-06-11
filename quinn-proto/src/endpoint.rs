@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
-use qlog_rs::writer::PacketNum;
+use qlog_rs::{events::RawInfo, quic_10::{data::{PacketHeader, PacketType, Token as LogToken}, events::PacketReceived}, writer::{PacketNum, QlogWriter}};
 use rand::{Rng, RngCore, SeedableRng, rngs::StdRng};
 use rustc_hash::FxHashMap;
 use slab::Slab;
@@ -483,6 +483,57 @@ impl Endpoint {
             panic!("non-initial packet in handle_first_packet()");
         };
 
+        // TODO: Update values
+        let token  = LogToken::new(None, None, Some(
+            RawInfo::new(
+                Some(header.token.len() as u64),
+                None
+            )
+        ));
+
+        let packet_type = header.packet_type();
+
+        let length = match packet_type {
+            PacketType::Initial | PacketType::Handshake | PacketType::ZeroRtt => {
+                // These types have a packet number
+                let packet_num_length = header.number.len() as u16;
+                let payload_length = packet.payload.len() as u16;
+
+                Some(packet_num_length + payload_length)
+            }
+            _ => None,
+        };
+
+        // TODO: Update values
+        let log_header = PacketHeader::new(
+            None,
+            packet_type,
+            None,
+            // TODO: Fix packet number (into() won't always give an accurate number)
+            Some(header.number.into()),
+            None,
+            Some(token),
+            length,
+            Some(header.version.to_string()),
+            None,
+            None,
+            Some(header.src_cid.to_string()),
+            Some(header.dst_cid.to_string())
+        );
+
+        // TODO: Update values
+        let packet_received = PacketReceived::new(
+            log_header,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None
+        );
+
+        QlogWriter::cache_quic_packet_received(header.dst_cid.to_string(), header.log_number(), packet_received);
+
         let server_config = self.server_config.as_ref().unwrap().clone();
 
         let token = match IncomingToken::from_header(&header, &server_config, addresses.remote) {
@@ -879,6 +930,7 @@ impl Endpoint {
         let max_len =
             INITIAL_MTU as usize - partial_encode.header_len - crypto.packet.local.tag_len();
         // TODO: Check if these are right
+        // TODO: Fix packet number (into() won't always give an accurate number)
         frame::Close::from(reason).encode(buf, max_len, *remote_id, PacketNum::Number(header.space().into(), number.into()));
         buf.resize(buf.len() + crypto.packet.local.tag_len(), 0);
         partial_encode.finish(buf, &*crypto.header.local, Some((0, &*crypto.packet.local)));
@@ -889,6 +941,7 @@ impl Endpoint {
             segment_size: None,
             src_ip: addresses.local_ip,
             // Should always work since this is an Initial header
+            // TODO: Fix packet number (into() won't always give an accurate number)
             packet_nums: vec![PacketNum::Number(header.space().into(), header.number().unwrap().into())]
         }
     }
