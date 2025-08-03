@@ -731,11 +731,6 @@ impl InitialHeader {
     pub(crate) fn packet_type(&self) -> PacketType {
         PacketType::Initial
     }
-
-    // TODO: Fix packet number (into() won't always give an accurate number)
-    pub(crate) fn log_number(&self) -> PacketNum {
-        PacketNum::Number(PacketNumSpace::Initial, self.number.into())
-    }
 }
 
 // An encoded packet number

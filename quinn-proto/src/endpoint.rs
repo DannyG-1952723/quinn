@@ -8,7 +8,7 @@ use std::{
 };
 
 use bytes::{BufMut, Bytes, BytesMut};
-use qlog_rs::{events::RawInfo, quic_10::{data::{PacketHeader, PacketType, Token as LogToken}, events::PacketReceived}, writer::{PacketNum, QlogWriter}};
+use qlog_rs::{events::RawInfo, quic_10::{data::{PacketHeader, PacketType, Token as LogToken}, events::PacketReceived}, writer::{PacketNum, PacketNumSpace, QlogWriter}};
 use rand::{Rng, RngCore, SeedableRng, rngs::StdRng};
 use rustc_hash::FxHashMap;
 use slab::Slab;
@@ -532,7 +532,8 @@ impl Endpoint {
             None
         );
 
-        QlogWriter::cache_quic_packet_received(header.dst_cid.to_string(), header.log_number(), packet_received);
+        // First packet, so expected packet number is 0
+        QlogWriter::cache_quic_packet_received(header.dst_cid.to_string(), PacketNum::Number(PacketNumSpace::Initial, header.number.expand(0)), packet_received);
 
         let server_config = self.server_config.as_ref().unwrap().clone();
 

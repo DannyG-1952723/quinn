@@ -184,8 +184,7 @@ impl PacketBuilder {
             None
         );
 
-        // TODO: Fix packet number (into() won't always give an accurate number)
-        QlogWriter::cache_quic_packet_sent(conn.initial_dst_cid.to_string(), PacketNum::Number(header.space().into(), number.into()), log_packet);
+        QlogWriter::cache_quic_packet_sent(conn.initial_dst_cid.to_string(), PacketNum::Number(header.space().into(), exact_number), log_packet);
 
         let partial_encode = header.encode(buffer);
         if conn.peer_params.grease_quic_bit && conn.rng.random() {

@@ -1,7 +1,7 @@
 use qlog_rs::events::RawInfo;
 use qlog_rs::quic_10::data::{PacketHeader, PacketType, Token};
 use qlog_rs::quic_10::events::PacketReceived;
-use qlog_rs::writer::QlogWriter;
+use qlog_rs::writer::{PacketNum, QlogWriter};
 use tracing::{debug, trace};
 
 use crate::{ConnectionId, Instant};
@@ -65,6 +65,10 @@ pub(super) fn unprotect_header(
                 _ => None
             };
 
+            let space = packet.header.space();
+            let rx_packet = spaces[space].rx_packet;
+            let number = packet.header.number()?.expand(rx_packet + 1);
+
             let packet_type = packet.header.packet_type();
 
             let length = match packet_type {
@@ -84,7 +88,7 @@ pub(super) fn unprotect_header(
                 packet_type,
                 None,
                 // TODO: Fix packet number (into() won't always give an accurate number)
-                packet.header.number().map_or_else(|| None, |number| Some(number.into())),
+                Some(number),
                 None,
                 token,
                 length,
@@ -106,7 +110,7 @@ pub(super) fn unprotect_header(
                 None
             );
 
-            QlogWriter::cache_quic_packet_received(initial_dst_cid.to_string(), packet.header.log_number(), packet_received);
+            QlogWriter::cache_quic_packet_received(initial_dst_cid.to_string(), PacketNum::Number(space.into(), number), packet_received);
 
             Some(UnprotectHeaderResult {
                 packet: Some(packet),
